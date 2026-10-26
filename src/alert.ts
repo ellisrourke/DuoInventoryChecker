@@ -1,6 +1,6 @@
 // Alert text shared by browser notifications and the Discord webhook.
 
-import { shortLabel } from "./catalog.ts";
+import { type Catalog, DEFAULT_CATALOG, shortLabel } from "./catalog.ts";
 import type { Hit } from "./settings.ts";
 
 export interface Alert {
@@ -8,7 +8,10 @@ export interface Alert {
   body: string;
 }
 
-export function buildAlert(hits: Hit[]): Alert | null {
+export function buildAlert(
+  hits: Hit[],
+  cat: Catalog = DEFAULT_CATALOG,
+): Alert | null {
   const grouped = new Map<string, string[]>();
   for (const hit of hits) {
     const stores = grouped.get(hit.part) ?? [];
@@ -18,11 +21,11 @@ export function buildAlert(hits: Hit[]): Alert | null {
   const storeCount = new Set(hits.map((h) => h.storeId)).size;
   if (!storeCount) return null;
   return {
-    title: `iPhone Duo in stock at ${storeCount} store${
+    title: `${cat.productName} in stock at ${storeCount} store${
       storeCount === 1 ? "" : "s"
     }`,
     body: [...grouped].map(([part, stores]) =>
-      `${shortLabel(part)}: ${stores.join(", ")}`
+      `${shortLabel(part, cat)}: ${stores.join(", ")}`
     ).join("\n"),
   };
 }

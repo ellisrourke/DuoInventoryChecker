@@ -1,16 +1,21 @@
-// Password-protected UI (Stock / Recent changes / Patterns / Settings) and a
+// Local UI (Stock / Recent changes / Patterns / Settings) and a
 // small JSON API. Server-rendered HTML with inline CSS; works without JS.
 
 import { buildAlert, sendDiscord } from "./alert.ts";
 import {
-  ALL_SKUS,
-  CAPACITIES,
-  COLORS,
+  capacitiesOf,
+  type Catalog,
+  colorsOf,
   findStore,
-  PRODUCTS,
+  formatSkus,
+  formatStores,
+  isValidRegion,
+  isValidTimeZone,
+  parseSkus,
+  parseStores,
+  shopUrl,
   shortLabel,
   skuFor,
-  STORES,
 } from "./catalog.ts";
 import {
   computePatterns,
@@ -25,8 +30,10 @@ import {
 } from "./history.ts";
 import { getSnapshot, type StockSnapshot } from "./stock.ts";
 import {
+  allPairs,
   getLastRun,
   getSettings,
+  INTERVAL_OPTIONS,
   pairKey,
   type RunStatus,
   sanitizeSettings,
@@ -36,11 +43,9 @@ import {
 } from "./settings.ts";
 
 export interface WebDeps {
-  /** Admin password; `undefined` falls back to ADMIN_PASSWORD. */
-  adminPassword?: string;
   /** Invoked by POST /run. */
   runCheck?: () => Promise<RunStatus>;
-  /** Discord webhook override (tests); `undefined` falls back to the environment. */
+  /** Discord webhook override (tests); `undefined` uses saved settings, then the environment. */
   discordWebhookUrl?: string;
   /** Fetch override for the Discord test action. */
   fetchFn?: typeof fetch;
@@ -49,7 +54,6 @@ export interface WebDeps {
 }
 
 const BASE_HEADERS = { "Cache-Control": "no-store" };
-const TZ = "Australia/Brisbane";
 const TABS = [
   ["stock", "Stock"],
   ["changes", "Recent changes"],
@@ -70,35 +74,6 @@ export function escapeHtml(s: unknown): string {
 }
 
 const esc = escapeHtml;
-
-async function safeEqual(a: string, b: string): Promise<boolean> {
-  const enc = new TextEncoder();
-  const [ha, hb] = await Promise.all([
-    crypto.subtle.digest("SHA-256", enc.encode(a)),
-    crypto.subtle.digest("SHA-256", enc.encode(b)),
-  ]);
-  const x = new Uint8Array(ha), y = new Uint8Array(hb);
-  let diff = 0;
-  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
-  return diff === 0;
-}
-
-async function isAuthorized(req: Request, password: string): Promise<boolean> {
-  const h = req.headers.get("authorization");
-  if (!h || !/^basic\s+/i.test(h)) return false;
-  let decoded: string;
-  try {
-    const bin = atob(h.replace(/^basic\s+/i, "").trim());
-    decoded = new TextDecoder().decode(
-      Uint8Array.from(bin, (c) => c.charCodeAt(0)),
-    );
-  } catch {
-    return false;
-  }
-  const idx = decoded.indexOf(":");
-  if (idx < 0) return false;
-  return await safeEqual(decoded.slice(idx + 1), password);
-}
 
 function sameOrigin(req: Request): boolean {
   const host = new URL(req.url).host;
@@ -141,16 +116,27 @@ function parseTab(v: string | null | undefined): Tab {
 
 // ---------------------------------------------------------------- time ----
 
-const LOCAL_FMT = new Intl.DateTimeFormat("en-US", {
-  timeZone: TZ,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  weekday: "short",
-  hour: "2-digit",
-  minute: "2-digit",
-  hourCycle: "h23",
-});
+// Time zone for the page being rendered; set by renderPage (rendering is sync).
+let tz = "UTC";
+const formatters = new Map<string, Intl.DateTimeFormat>();
+
+function localFmt(): Intl.DateTimeFormat {
+  let f = formatters.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+    formatters.set(tz, f);
+  }
+  return f;
+}
 
 interface Local {
   date: string;
@@ -163,7 +149,7 @@ function local(iso: string | Date): Local | null {
   const d = iso instanceof Date ? iso : new Date(iso);
   if (isNaN(d.getTime())) return null;
   const o: Record<string, string> = {};
-  for (const p of LOCAL_FMT.formatToParts(d)) o[p.type] = p.value;
+  for (const p of localFmt().formatToParts(d)) o[p.type] = p.value;
   const hh = (o.hour ?? "00").replace(/^24$/, "00");
   return {
     date: `${o.year}-${o.month}-${o.day}`,
@@ -173,7 +159,7 @@ function local(iso: string | Date): Local | null {
   };
 }
 
-/** "13:03" in Brisbane time. */
+/** "13:03" in the configured time zone. */
 function clock(iso: string): string {
   const l = local(iso);
   return l ? `${l.hh}:${l.mm}` : iso;
@@ -197,6 +183,15 @@ function relativeClock(iso: string, now: Date): string {
     ? "yesterday"
     : l.weekday;
   return `${when} ${l.hh}:${l.mm}`;
+}
+
+/** "just now", "5m ago", "2h ago", "3d ago". */
+function ago(iso: string, now: Date): string {
+  const mins = Math.floor((now.getTime() - Date.parse(iso)) / 60000);
+  if (!Number.isFinite(mins) || mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 48 * 60) return `${Math.floor(mins / 60)}h ago`;
+  return `${Math.floor(mins / 1440)}d ago`;
 }
 
 /** 0 -> "12am", 13 -> "1pm". */
@@ -236,7 +231,7 @@ a{color:var(--accent)}
 .eyebrow{font-size:.78rem;font-weight:700;letter-spacing:.24em;color:var(--accent);margin:0 0 2px}
 h1{font-size:2rem;font-weight:800;letter-spacing:-.02em;line-height:1.1;margin:0;color:var(--fg)}
 .checked{color:var(--muted);font-size:.95rem}
-nav.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:18px;overflow-x:auto}
+nav.tabs{position:sticky;top:0;z-index:5;background:var(--bg);display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:18px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}nav.tabs::-webkit-scrollbar{display:none}
 nav.tabs a{padding:14px 16px 12px;font-weight:600;color:var(--muted);text-decoration:none;border-bottom:3px solid transparent;margin-bottom:-1px;white-space:nowrap}
 nav.tabs a:hover{color:var(--fg)}
 @media (max-width:480px){nav.tabs{gap:0}nav.tabs a{padding:12px 9px 10px;font-size:14px}}
@@ -334,15 +329,70 @@ button.btn.primary{background:var(--accent);border-color:var(--accent);color:var
 button.btn.danger{color:var(--bad)}
 label.chk{display:inline-flex;align-items:center;gap:8px;padding:6px 14px 6px 0;min-height:36px}
 label.chk.block{display:flex}
+input.field,select.field{font:inherit;width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--chipline);background:var(--bg);color:var(--fg);outline:none}
+input.field:focus,select.field:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+input.field::placeholder{color:var(--muted)}
+.field-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.field-row .field{flex:1;min-width:220px;width:auto}
+.fields{display:grid;gap:6px}.fields .muted{margin:0 0 8px}.fields label{margin-top:6px}textarea.field{resize:vertical}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88rem}
 input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent)}
 fieldset{border:0;padding:0;margin:10px 0}
 legend{font-size:.8rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700;padding:0}
+.note{transition:opacity .4s,transform .4s}.note.fade{opacity:0;transform:translateY(-4px)}
+button{transition:background-color .15s,border-color .15s,opacity .15s,transform .05s}
+button:active:not(:disabled){transform:scale(.97)}
+button:disabled,button.busy{opacity:.55;cursor:progress}
+button.btn:hover:not(:disabled){border-color:var(--accent)}
+button.btn:focus-visible,.ghost-btn:focus-visible,summary:focus-visible,input.field:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+details.card>summary{cursor:pointer;font-size:1.15rem;font-weight:700;list-style:none;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+details.card>summary::-webkit-details-marker{display:none}
+details.card>summary::before{content:"▸";color:var(--accent);transition:transform .15s}
+details.card[open]>summary::before{transform:rotate(90deg)}
+details.card>summary .muted{font-size:.88rem;font-weight:400}
+details.card>form{margin-top:12px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 dl.kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;margin:8px 0 0}
 dl.kv dt{color:var(--muted)}dl.kv dd{margin:0}
 `;
 
-const JS =
-  `document.querySelectorAll('form.filters select').forEach(function(s){s.addEventListener('change',function(){s.form.submit()})});
+function buildJs(productName: string): string {
+  return `(function(){
+  var u=new URL(location.href),changed=false;
+  ["saved","ran","error","discordTest"].forEach(function(k){if(u.searchParams.has(k)){u.searchParams.delete(k);changed=true;}});
+  if(changed)history.replaceState(null,"",u.pathname+u.search+u.hash);
+  document.querySelectorAll(".note.ok").forEach(function(n){
+    setTimeout(function(){n.classList.add("fade");setTimeout(function(){n.remove();},400);},4000);
+  });
+  function resetBusy(){
+    document.querySelectorAll("button[data-label]").forEach(function(b){b.disabled=false;b.textContent=b.dataset.label;delete b.dataset.label;});
+  }
+  window.addEventListener("pageshow",resetBusy);
+  document.addEventListener("submit",function(e){
+    var f=e.target;
+    if(f.getAttribute&&f.getAttribute("action")==="/toggle"){
+      e.preventDefault();
+      var btn=f.querySelector("button");
+      btn.classList.add("busy");
+      fetch("/toggle",{method:"POST",body:new URLSearchParams(new FormData(f)),headers:{"Content-Type":"application/x-www-form-urlencoded"}})
+        .then(function(r){return r.text();})
+        .then(function(html){
+          var next=new DOMParser().parseFromString(html,"text/html").querySelector(".mwrap");
+          var cur=document.querySelector(".mwrap");
+          if(next&&cur)cur.replaceWith(next);else location.reload();
+        })
+        .catch(function(){f.submit();});
+      return;
+    }
+    var b=e.submitter||f.querySelector("button[type=submit]");
+    if(b&&f.method==="post"){
+      setTimeout(function(){
+        b.dataset.label=b.textContent;
+        b.textContent=b.dataset.busy||"Saving…";
+        b.disabled=true;
+      },0);
+    }
+  });
+})();
+document.querySelectorAll('form.filters select').forEach(function(s){s.addEventListener('change',function(){s.form.submit()})});
 (function(){
   var button=document.getElementById("enable-notifications");
   var message=document.getElementById("notification-status");
@@ -379,7 +429,9 @@ const JS =
       try{
         if(Notification.permission!=="granted")await Notification.requestPermission();
         if(Notification.permission!=="granted"){showPermission();return;}
-        var testNotification=new Notification("iPhone Duo in stock (test)",{body:"512GB Star White available at Brisbane. This is a test alert."});
+        var testNotification=new Notification(${
+    JSON.stringify(productName + " in stock (test)").replace(/</g, "\\u003c")
+  },{body:"This is a test alert."});
         message.textContent="Test alert created; waiting for browser delivery.";
         var deliveryReported=false;
         testNotification.onshow=function(){
@@ -423,6 +475,7 @@ const JS =
   poll();
   window.setInterval(poll,15000);
 })();`;
+}
 
 // ------------------------------------------------------------ rendering ----
 
@@ -437,8 +490,8 @@ interface PageData {
   restocks: RestockEvent[];
 }
 
-function storeName(id: string): string {
-  return findStore(id)?.name ?? id;
+function storeName(id: string, cat: Catalog): string {
+  return findStore(id, cat)?.name ?? id;
 }
 
 function mapsUrl(name: string, address: string): string {
@@ -446,28 +499,34 @@ function mapsUrl(name: string, address: string): string {
     encodeURIComponent(`Apple ${name} ${address}`);
 }
 
-function availableCount(snapshot: StockSnapshot | null, storeId?: string) {
+function availableCount(
+  snapshot: StockSnapshot | null,
+  cat: Catalog,
+  storeId?: string,
+) {
   if (!snapshot) return 0;
   let n = 0;
-  for (const st of STORES) {
+  for (const st of cat.stores) {
     if (storeId && st.id !== storeId) continue;
     const parts = snapshot.stores[st.id]?.parts ?? {};
-    for (const sku of ALL_SKUS) if (parts[sku.part]?.available) n++;
+    for (const sku of cat.skus) if (parts[sku.part]?.available) n++;
   }
   return n;
 }
 
 function renderHeader(d: PageData): string {
   const checked = d.snapshot
-    ? `checked ${clock(d.snapshot.at)}`
+    ? `checked ${clock(d.snapshot.at)} · ${ago(d.snapshot.at, d.now)}`
     : "not checked yet";
   const tabs = TABS.map(([key, label]) =>
     `<a href="/?tab=${key}"${key === d.tab ? ' aria-current="page"' : ""}>${
       esc(label)
     }</a>`
   ).join("");
-  return `<header class="top"><div><p class="eyebrow">RESULTS · 🇦🇺 AUSTRALIA</p><h1>${
-    esc(PRODUCTS[0].name)
+  return `<header class="top"><div><p class="eyebrow">RESULTS · ${
+    esc(d.settings.catalog.region.toUpperCase())
+  }</p><h1>${
+    esc(d.settings.catalog.productName)
   }</h1></div><div class="checked">${esc(checked)}</div></header>
 <nav class="tabs" aria-label="Sections">${tabs}</nav>`;
 }
@@ -482,7 +541,9 @@ function renderNotes(d: PageData): string {
   } else if (u.has("ran")) {
     out.push(`<p class="note ok">Check completed.</p>`);
   } else if (u.has("discordTest")) {
-    out.push(`<p class="note ok">Discord test alert accepted by the webhook.</p>`);
+    out.push(
+      `<p class="note ok">Discord test alert accepted by the webhook.</p>`,
+    );
   }
   if (!d.settings.enabled) {
     out.push(
@@ -524,7 +585,7 @@ function renderCell(
 ): string {
   const watched = watch.has(pairKey(st.id, sku.part));
   const ps = d.snapshot?.stores[st.id]?.parts[sku.part];
-  const label = shortLabel(sku.part);
+  const label = shortLabel(sku.part, d.settings.catalog);
   let btn: string;
   if (ps?.available) {
     const q = ps.quote ? ` — ${ps.quote}` : "";
@@ -553,9 +614,10 @@ function renderCell(
 }
 
 function renderMatrixTable(d: PageData): string {
+  const cat = d.settings.catalog;
   const watch = new Set(d.settings.watch);
-  const head = STORES.map((st) => {
-    const n = availableCount(d.snapshot, st.id);
+  const head = cat.stores.map((st) => {
+    const n = availableCount(d.snapshot, cat, st.id);
     const badge = n > 0
       ? `<span class="badge avail">${n} option${
         n === 1 ? "" : "s"
@@ -565,15 +627,17 @@ function renderMatrixTable(d: PageData): string {
       esc(st.name)
     }</span>${badge}</th>`;
   }).join("");
-  const rows = CAPACITIES.map((cap) => {
+  const rows = capacitiesOf(cat).map((cap) => {
     const group = `<tr class="grp"><th scope="colgroup" colspan="${
-      STORES.length + 1
+      cat.stores.length + 1
     }">${esc(cap)}</th></tr>`;
-    const lines = COLORS.map((c) => {
-      const sku = skuFor(c.key, cap);
+    const lines = colorsOf(cat).map((c) => {
+      const sku = skuFor(c.key, cap, cat);
       if (!sku) return "";
       const chip = CHIPS[c.key] ?? FALLBACK_CHIP;
-      const cells = STORES.map((st) => renderCell(st, sku, d, watch)).join("");
+      const cells = cat.stores.map((st) => renderCell(st, sku, d, watch)).join(
+        "",
+      );
       return `<tr><th scope="row" class="rl"><span class="sw" style="background:${chip.bg}"></span>${
         esc(c.display)
       }</th>${cells}</tr>`;
@@ -584,7 +648,7 @@ function renderMatrixTable(d: PageData): string {
 }
 
 function renderStoreInfo(d: PageData, storeId: string): string {
-  const st = findStore(storeId)!;
+  const st = findStore(storeId, d.settings.catalog)!;
   const data = d.snapshot?.stores[st.id];
   let note = "";
   if (!data) {
@@ -596,34 +660,42 @@ function renderStoreInfo(d: PageData, storeId: string): string {
   }
   return `<article class="sinfo"><h3>${esc(st.name)}</h3>
 <a class="addr" href="${
-    esc(mapsUrl(st.name, st.address))
-  }" target="_blank" rel="noopener">${esc(st.address)}</a>
-<a class="phone" href="tel:${esc(st.phone.replace(/[^0-9+]/g, ""))}">${
-    esc(st.phone)
-  }</a>
+    esc(mapsUrl(st.name, st.address ?? ""))
+  }" target="_blank" rel="noopener">${esc(st.address ?? "Open in Maps")}</a>${
+    st.phone
+      ? `<a class="phone" href="tel:${esc(st.phone.replace(/[^0-9+]/g, ""))}">${
+        esc(st.phone)
+      }</a>`
+      : ""
+  }
 ${restockPill(d, st.id)}${note}</article>`;
 }
 
 function renderStock(d: PageData): string {
-  const n = availableCount(d.snapshot);
+  const cat = d.settings.catalog;
+  const n = availableCount(d.snapshot, cat);
   const summary = !d.snapshot
     ? "No check has run yet."
     : n > 0
     ? `<strong>${n}</strong> colour/size option${
       n === 1 ? "" : "s"
-    } available across ${STORES.length} stores`
-    : `Nothing in stock at your ${STORES.length} stores right now`;
+    } available across ${cat.stores.length} stores`
+    : `Nothing in stock at your ${cat.stores.length} stores right now`;
   const state = !d.snapshot ? "idle" : n > 0 ? "on" : "off";
   return `${
     renderNotes(d)
-  }<section class="hero ${state}"><span class="pulse" aria-hidden="true"></span><p>${summary}</p><form method="post" action="/run" class="runform"><input type="hidden" name="return" value="stock"><button class="pill-btn" type="submit">Check stock now</button></form><a class="ghost-btn" href="/?tab=settings">Alert settings</a></section>
+  }<section class="hero ${state}"><span class="pulse" aria-hidden="true"></span><p>${summary}</p><form method="post" action="/run" class="runform"><input type="hidden" name="return" value="stock"><button class="pill-btn" type="submit" data-busy="Checking…">Check stock now</button></form><a class="ghost-btn" href="/?tab=settings">Alert settings</a></section>
 ${renderMatrixTable(d)}
 <p class="legend"><span><b class="k in">In stock</b></span><span><b class="k watch">🔔 Watching</b> you'll be alerted</span><span><b class="k">Watch</b> tap to get alerts</span></p>
 <h2 class="sec">Stores</h2>
 <div class="sinfos">${
-    STORES.map((s) => renderStoreInfo(d, s.id)).join("")
+    cat.stores.map((s) => renderStoreInfo(d, s.id)).join("")
   }</div>
-<p class="foot">Checks run every minute. With browser notifications enabled and this dashboard open, you get an alert when an item newly comes into stock.</p>`;
+<p class="foot">Checks run every ${
+    d.settings.intervalMinutes === 1
+      ? "minute"
+      : `${d.settings.intervalMinutes} minutes`
+  }. With browser notifications enabled and this dashboard open, you get an alert when an item newly comes into stock.</p>`;
 }
 
 function renderChanges(d: PageData): string {
@@ -635,8 +707,8 @@ function renderChanges(d: PageData): string {
       : "WARNING";
     const body = h.kind === "warning"
       ? esc(h.message ?? "Warning")
-      : `${esc(h.part ? shortLabel(h.part) : "")}${
-        h.storeId ? ` at ${esc(storeName(h.storeId))}` : ""
+      : `${esc(h.part ? shortLabel(h.part, d.settings.catalog) : "")}${
+        h.storeId ? ` at ${esc(storeName(h.storeId, d.settings.catalog))}` : ""
       }`;
     return `<li><time datetime="${esc(h.at)}">${
       esc(dayClock(h.at))
@@ -668,7 +740,9 @@ function selectHtml(
   }</select>`;
 }
 
-function renderMatrix(p: Patterns): string {
+function renderMatrix(p: Patterns, cat: Catalog): string {
+  const COLORS = colorsOf(cat);
+  const CAPACITIES = capacitiesOf(cat);
   let max = 0;
   for (const c of COLORS) {
     for (const cap of CAPACITIES) {
@@ -724,12 +798,15 @@ function renderBars(
 }
 
 function renderPatterns(d: PageData): string {
+  const cat = d.settings.catalog;
+  const COLORS = colorsOf(cat);
+  const CAPACITIES = capacitiesOf(cat);
   const q = d.url.searchParams;
-  const storeId = STORES.find((s) => s.id === q.get("store"))?.id;
+  const storeId = cat.stores.find((s) => s.id === q.get("store"))?.id;
   const colorKey = COLORS.find((c) => c.key === q.get("color"))?.key;
   const capacity = CAPACITIES.find((c) => c === q.get("size"));
   const filter: PatternFilter = { storeId, colorKey, capacity };
-  const p = computePatterns(d.restocks, filter);
+  const p = computePatterns(d.restocks, filter, cat);
 
   const say = p.restocks === 0 || p.peakHour === null || p.peakDay === null
     ? "No restocks logged yet for this selection."
@@ -747,14 +824,16 @@ function renderPatterns(d: PageData): string {
   const dayAxis = dayShort.map((l) => `<span>${l}</span>`).join("");
 
   return `${renderNotes(d)}<h2 class="sec">When does stock come in? · ${
-    esc(PRODUCTS[0].name)
+    esc(d.settings.catalog.productName)
   }</h2>
-<p class="sub">Restocks logged over the last 7 days at your ${STORES.length} stores, in Brisbane time.</p>
+<p class="sub">Restocks logged over the last 7 days at your ${cat.stores.length} stores, in ${
+    esc(cat.timeZone)
+  } time.</p>
 <form class="filters" method="get" action="/"><input type="hidden" name="tab" value="patterns">${
     selectHtml(
       "store",
       "All stores",
-      STORES.map((s) => [s.id, s.name]),
+      cat.stores.map((s) => [s.id, s.name]),
       storeId,
     )
   }${
@@ -769,7 +848,7 @@ function renderPatterns(d: PageData): string {
   }<noscript><button class="btn primary" type="submit">Apply</button></noscript></form>
 <h3 class="eb">By colour and size</h3>
 <p class="sub">Number of restocks for each configuration, and when it usually arrives.</p>
-${renderMatrix(p)}
+${renderMatrix(p, cat)}
 <p class="say">${say}</p>
 <h3 class="eb">By time of day</h3>
 ${renderBars(p.byHour, hourLabels, p.peakHour, false)}
@@ -782,37 +861,24 @@ ${renderBars(p.byDay, DAY_NAMES, p.peakDay, true)}
 
 function renderSettings(d: PageData): string {
   const { settings: s, lastRun: r } = d;
-  const total = STORES.length * ALL_SKUS.length;
-  const colourBoxes = COLORS.map((c) =>
-    `<label class="chk"><input type="checkbox" name="color" value="${
-      esc(c.key)
-    }" checked> ${esc(c.display)}</label>`
-  ).join("");
-  const sizeBoxes = CAPACITIES.map((c) =>
-    `<label class="chk"><input type="checkbox" name="size" value="${
-      esc(c)
-    }" checked> ${esc(c)}</label>`
-  ).join("");
-  const storeBoxes = STORES.map((st) =>
-    `<label class="chk"><input type="checkbox" name="store" value="${
-      esc(st.id)
-    }" checked> ${esc(st.name)}</label>`
-  ).join("");
+  const cat = s.catalog;
   const last = !r
     ? `<p class="muted">No check has run yet.</p>`
-    : `<dl class="kv"><dt>Last check</dt><dd>${
-      esc(dayClock(r.at))
-    } (Brisbane) · ${r.ok ? "OK" : "<strong>Error</strong>"}</dd>${
+    : `<dl class="kv"><dt>Last check</dt><dd>${esc(dayClock(r.at))} (${
+      esc(cat.timeZone)
+    }) · ${r.ok ? "OK" : "<strong>Error</strong>"}</dd>${
       r.error ? `<dt>Error</dt><dd>${esc(r.error)}</dd>` : ""
     }<dt>In stock (watched)</dt><dd>${
       r.hits.length
-        ? r.hits.map((h) => `${esc(shortLabel(h.part))} at ${esc(h.storeName)}`)
+        ? r.hits.map((h) =>
+          `${esc(shortLabel(h.part, cat))} at ${esc(h.storeName)}`
+        )
           .join("; ")
         : "none"
     }</dd><dt>Consecutive failures</dt><dd>${r.consecutiveFailures}</dd>${
       r.storesMissing.length
         ? `<dt>Not returned by Apple</dt><dd>${
-          esc(r.storesMissing.map(storeName).join(", "))
+          esc(r.storesMissing.map((id) => storeName(id, cat)).join(", "))
         }</dd>`
         : ""
     }</dl>`;
@@ -824,19 +890,74 @@ function renderSettings(d: PageData): string {
   }> <strong>Alerts enabled</strong></label>
 <p class="muted">Stock is still tracked while alerts are off; only notifications stop.</p>
 <p><button class="btn primary" type="submit">Save</button></p></form>
-<form class="card" method="post" action="/settings"><h2>Bulk watch tool</h2>
-<p class="muted">Pick colours, sizes and stores, then replace, add to or remove from your watch list. This edits the same per-cell alert toggles on the Stock tab. Currently watching <strong>${s.watch.length}</strong> of ${total} combinations.</p>
-<fieldset><legend>Colours</legend>${colourBoxes}</fieldset>
-<fieldset><legend>Sizes</legend>${sizeBoxes}</fieldset>
-<fieldset><legend>Stores</legend>${storeBoxes}</fieldset>
-<div class="row"><button class="btn primary" type="submit" name="mode" value="replace">Replace watch list</button><button class="btn" type="submit" name="mode" value="add">Add</button><button class="btn danger" type="submit" name="mode" value="remove">Remove</button></div></form>
+<form class="card" method="post" action="/settings"><input type="hidden" name="webhook_form" value="1">
+<h2>Discord webhook</h2>
+<label for="discordWebhookUrl"><strong>Webhook URL</strong></label>
+<div class="field-row"><input class="field" type="url" id="discordWebhookUrl" name="discordWebhookUrl" value="${
+    esc(s.discordWebhookUrl ?? "")
+  }" placeholder="https://discord.com/api/webhooks/..." autocomplete="off" spellcheck="false"><button class="btn primary" type="submit">Save webhook</button></div>
+<p class="muted">Posts to Discord when a watched item newly comes into stock. Leave blank to disable.</p>
+</form>
+<form class="card" method="post" action="/settings"><input type="hidden" name="interval_form" value="1">
+<h2>Check schedule</h2>
+<label for="intervalMinutes"><strong>Check stock every</strong></label>
+<div class="field-row"><select class="field" id="intervalMinutes" name="intervalMinutes">${
+    INTERVAL_OPTIONS.map((m) =>
+      `<option value="${m}"${m === s.intervalMinutes ? " selected" : ""}>${
+        m === 1 ? "1 minute" : m + " minutes"
+      }</option>`
+    ).join("")
+  }</select><button class="btn primary" type="submit">Save schedule</button></div>
+<p class="muted">Apple may block frequent checks (HTTP 541); a longer interval is gentler.</p></form>
 <section class="card"><h2>Notifications</h2>
 <p>Browser notifications arrive when stock is found while the dashboard is open.</p>
-<div class="row"><button class="btn" id="enable-notifications" type="button">Enable browser notifications</button><button class="btn" id="test-stock-alert" type="button">Test browser alert</button><form method="post" action="/discord-test"><button class="btn" type="submit">Test Discord alert</button></form><form method="post" action="/run"><input type="hidden" name="return" value="settings"><button class="btn" type="submit">Run check now</button></form></div><p class="muted" id="notification-status" role="status">Browser notifications require permission and this dashboard to stay open. Discord alerts require DISCORD_WEBHOOK_URL.</p></section>
+<div class="row"><button class="btn" id="enable-notifications" type="button">Enable browser notifications</button><button class="btn" id="test-stock-alert" type="button">Test browser alert</button><form method="post" action="/discord-test"><button class="btn" type="submit" data-busy="Sending…">Test Discord alert</button></form><form method="post" action="/run"><input type="hidden" name="return" value="settings"><button class="btn" type="submit" data-busy="Checking…">Run check now</button></form></div><p class="muted" id="notification-status" role="status">Browser notifications require permission and this dashboard to stay open. Discord alerts require a webhook URL above.</p></section>
+<details class="card" open><summary>What to watch <span class="muted">· ${
+    esc(cat.productName)
+  }, ${cat.stores.length} store${
+    cat.stores.length === 1 ? "" : "s"
+  }, ${cat.skus.length} model${
+    cat.skus.length === 1 ? "" : "s"
+  }</span></summary>
+<form method="post" action="/settings"><input type="hidden" name="catalog_form" value="1">
+<p class="muted">Defaults to the iPhone Duo in Brisbane. Change these to watch any Apple product at any Apple Store. Newly added store/model combinations are watched automatically.</p>
+<div class="fields">
+<label for="productName"><strong>Product name</strong></label>
+<input class="field" id="productName" name="productName" value="${
+    esc(cat.productName)
+  }" required>
+<label for="region"><strong>Apple region</strong></label>
+<input class="field" id="region" name="region" value="${
+    esc(cat.region)
+  }" placeholder="au" pattern="[a-z]{2}(/[a-z]{2})?" required>
+<p class="muted">The path in apple.com/&lt;region&gt;, e.g. au, us, uk, ca or ca/fr.</p>
+<label for="timeZone"><strong>Time zone</strong></label>
+<input class="field" id="timeZone" name="timeZone" value="${
+    esc(cat.timeZone)
+  }" placeholder="Australia/Brisbane" required>
+<p class="muted">IANA name, used for displayed times and restock patterns.</p>
+<label for="shopUrl"><strong>Product page URL</strong> (optional)</label>
+<input class="field" type="url" id="shopUrl" name="shopUrl" value="${
+    esc(cat.shopUrl)
+  }" placeholder="${esc(shopUrl({ ...cat, shopUrl: "" }))}">
+<label for="stores"><strong>Stores</strong></label>
+<textarea class="field mono" id="stores" name="stores" rows="5" spellcheck="false" required>${
+    esc(formatStores(cat.stores))
+  }</textarea>
+<p class="muted">One per line: <code>Store ID | Name | Address | Phone</code> (address and phone optional). Store IDs look like R466; find them in Apple's store URLs.</p>
+<label for="skus"><strong>Models</strong></label>
+<textarea class="field mono" id="skus" name="skus" rows="8" spellcheck="false" required>${
+    esc(formatSkus(cat.skus))
+  }</textarea>
+<p class="muted">One per line: <code>Part number | Capacity | Colour</code>. Part numbers are in Apple's product page data (e.g. MK2D4X/A).</p>
+</div>
+<p><button class="btn primary" type="submit">Save</button></p></form></details>
 <section class="card"><h2>Last run</h2>${last}</section>`;
 }
 
 export function renderPage(d: PageData): string {
+  const cat = d.settings.catalog;
+  tz = cat.timeZone;
   const body = d.tab === "stock"
     ? renderStock(d)
     : d.tab === "changes"
@@ -844,17 +965,19 @@ export function renderPage(d: PageData): string {
     : d.tab === "patterns"
     ? renderPatterns(d)
     : renderSettings(d);
-  return `<!doctype html><html lang="en-AU"><head><meta charset="utf-8">
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">${
     d.tab === "stock" ? `<meta http-equiv="refresh" content="60">` : ""
   }
-<title>iPhone Duo Stock Watcher</title><style>${CSS}</style></head><body><main data-last-run="${
+<title>${
+    esc(cat.productName)
+  } Stock Watcher</title><style>${CSS}</style></head><body><main data-last-run="${
     esc(d.lastRun?.at ?? "")
   }">
 ${renderHeader(d)}
 ${body}
-</main><script>${JS}</script></body></html>`;
+</main><script>${buildJs(cat.productName)}</script></body></html>`;
 }
 
 // -------------------------------------------------------------- handler ----
@@ -868,16 +991,6 @@ const ROUTES: Record<string, string[]> = {
   "/discord-test": ["POST"],
 };
 
-/** Colour x size x store product as pair keys. */
-function bulkPairs(form: FormData): string[] {
-  const parts = form.getAll("color").flatMap((c) =>
-    form.getAll("size").map((z) => skuFor(String(c), String(z))?.part)
-  ).filter((p): p is string => !!p);
-  return form.getAll("store").flatMap((st) =>
-    parts.map((p) => pairKey(String(st), p))
-  );
-}
-
 export function createHandler(
   kv: Deno.Kv,
   deps: WebDeps = {},
@@ -886,20 +999,6 @@ export function createHandler(
     const url = new URL(req.url);
     if (url.pathname === "/health" && req.method === "GET") {
       return text("ok", 200);
-    }
-
-    const password = deps.adminPassword ?? Deno.env.get("ADMIN_PASSWORD");
-    if (!password) {
-      return text(
-        "ADMIN_PASSWORD is not set. Set the ADMIN_PASSWORD environment variable to enable this app.",
-        503,
-      );
-    }
-    if (!(await isAuthorized(req, password))) {
-      return text("Authentication required", 401, {
-        "WWW-Authenticate":
-          'Basic realm="iPhone Duo Stock Watcher", charset="UTF-8"',
-      });
     }
 
     const allowed = ROUTES[url.pathname];
@@ -951,7 +1050,7 @@ export function createHandler(
             lastRun.storesChecked.includes(h.storeId)
           )
           : [];
-        const notification = buildAlert(alertHits);
+        const notification = buildAlert(alertHits, settings.catalog);
         return new Response(
           JSON.stringify({ settings, lastRun, snapshot, notification }),
           {
@@ -973,28 +1072,81 @@ export function createHandler(
       case "/toggle": {
         const storeId = String(form.get("store") ?? "");
         const part = String(form.get("part") ?? "");
-        if (findStore(storeId) && ALL_SKUS.some((s) => s.part === part)) {
+        const cat = (await getSettings(kv)).catalog;
+        if (findStore(storeId, cat) && cat.skus.some((s) => s.part === part)) {
           await toggleWatch(kv, storeId, part);
         }
-        return redirect("tab=stock", findStore(storeId)?.id ?? "");
+        return redirect("tab=stock", findStore(storeId, cat)?.id ?? "");
       }
       case "/settings": {
         const settings = await getSettings(kv);
-        const mode = String(form.get("mode") ?? "");
         let watch = settings.watch;
-        if (mode === "replace" || mode === "add" || mode === "remove") {
-          const pairs = bulkPairs(form);
-          if (mode === "replace") watch = pairs;
-          else if (mode === "add") watch = [...watch, ...pairs];
-          else {
-            const drop = new Set(pairs);
-            watch = watch.filter((k) => !drop.has(k));
+        let catalog = settings.catalog;
+        if (form.has("catalog_form")) {
+          const next: Catalog = {
+            region: String(form.get("region") ?? "").trim().toLowerCase(),
+            timeZone: String(form.get("timeZone") ?? "").trim(),
+            productName: String(form.get("productName") ?? "").trim(),
+            shopUrl: String(form.get("shopUrl") ?? "").trim(),
+            stores: parseStores(String(form.get("stores") ?? "")),
+            skus: parseSkus(String(form.get("skus") ?? "")),
+          };
+          const problem = !next.productName
+            ? "Product name is required"
+            : !isValidRegion(next.region)
+            ? "Region must look like au, us, uk or ca/fr"
+            : !next.timeZone || !isValidTimeZone(next.timeZone)
+            ? "Unknown time zone (use an IANA name such as Europe/London)"
+            : next.shopUrl && !/^https:\/\/\S+$/.test(next.shopUrl)
+            ? "Product page URL must start with https://"
+            : next.stores.length === 0
+            ? "Add at least one store"
+            : next.skus.length === 0
+            ? "Add at least one model"
+            : "";
+          if (problem) {
+            return redirect(
+              "tab=settings&error=" + encodeURIComponent(problem),
+            );
           }
+          // Start watching combinations that didn't exist before.
+          const before = new Set(allPairs(settings.catalog));
+          watch = [
+            ...watch,
+            ...allPairs(next).filter((k) => !before.has(k)),
+          ];
+          catalog = next;
         }
         const enabled = form.has("alerts_form") || form.has("enabled")
           ? form.has("enabled")
           : settings.enabled;
-        await saveSettings(kv, sanitizeSettings({ enabled, watch }));
+        let discordWebhookUrl = settings.discordWebhookUrl;
+        if (form.has("webhook_form")) {
+          const raw = String(form.get("discordWebhookUrl") ?? "").trim();
+          discordWebhookUrl = raw || undefined;
+          if (
+            raw &&
+            !sanitizeSettings({ discordWebhookUrl: raw }).discordWebhookUrl
+          ) {
+            return redirect(
+              "tab=settings&error=" +
+                encodeURIComponent("Webhook URL must start with https://"),
+            );
+          }
+        }
+        const intervalMinutes = form.has("interval_form")
+          ? Number(form.get("intervalMinutes"))
+          : settings.intervalMinutes;
+        await saveSettings(
+          kv,
+          sanitizeSettings({
+            enabled,
+            watch,
+            discordWebhookUrl,
+            intervalMinutes,
+            catalog,
+          }),
+        );
         return redirect("tab=settings&saved=1");
       }
       case "/run": {
@@ -1015,31 +1167,30 @@ export function createHandler(
         }
       }
       case "/discord-test": {
-        const webhook = deps.discordWebhookUrl ??
+        const { catalog: cat, discordWebhookUrl } = await getSettings(kv);
+        const webhook = deps.discordWebhookUrl ?? discordWebhookUrl ??
           Deno.env.get("DISCORD_WEBHOOK_URL");
         if (!webhook) {
           return redirect(
             "tab=settings&error=" +
-              encodeURIComponent("DISCORD_WEBHOOK_URL is not set"),
+              encodeURIComponent("Discord webhook URL is not set"),
           );
         }
         const accepted = await sendDiscord(
           webhook,
           {
-            title: "iPhone Duo stock alert test",
+            title: `${cat.productName} stock alert test`,
             body: "Discord notifications are configured correctly.",
           },
-          PRODUCTS[0].shopUrl,
+          shopUrl(cat),
           deps.fetchFn,
         );
-        return accepted
-          ? redirect("tab=settings&discordTest=sent")
-          : redirect(
-            "tab=settings&error=" +
-              encodeURIComponent(
-                "Discord rejected the test alert; check server logs",
-              ),
-          );
+        return accepted ? redirect("tab=settings&discordTest=sent") : redirect(
+          "tab=settings&error=" +
+            encodeURIComponent(
+              "Discord rejected the test alert; check server logs",
+            ),
+        );
       }
     }
     return text("Not found", 404);

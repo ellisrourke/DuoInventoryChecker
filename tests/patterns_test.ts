@@ -1,3 +1,4 @@
+import { DEFAULT_CATALOG } from "../src/catalog.ts";
 import { computePatterns } from "../src/patterns.ts";
 import type { RestockEvent } from "../src/history.ts";
 import { assert, assertEquals } from "./_assert.ts";
@@ -34,7 +35,7 @@ Deno.test("UTC time on a different local day", () => {
   const utc = computePatterns(
     [ev("2026-05-02T02:30:00Z", "R466", "MK2D4X/A")],
     {},
-    "UTC",
+    { ...DEFAULT_CATALOG, timeZone: "UTC" },
   );
   assertEquals(utc.byHour[2], 1);
   assertEquals(utc.byDay[6], 1);

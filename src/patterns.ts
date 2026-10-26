@@ -1,6 +1,13 @@
 // Pure aggregation of restock events into "when does stock arrive" patterns.
 
-import { CAPACITIES, COLORS, findSku, findStore } from "./catalog.ts";
+import {
+  capacitiesOf,
+  type Catalog,
+  colorsOf,
+  DEFAULT_CATALOG,
+  findSku,
+  findStore,
+} from "./catalog.ts";
 import type { RestockEvent } from "./history.ts";
 
 export interface PatternFilter {
@@ -48,8 +55,11 @@ function argmax(values: number[]): number | null {
 export function computePatterns(
   events: RestockEvent[],
   filter: PatternFilter = {},
-  timeZone = "Australia/Brisbane",
+  cat: Catalog = DEFAULT_CATALOG,
 ): Patterns {
+  const timeZone = cat.timeZone;
+  const COLORS = colorsOf(cat);
+  const CAPACITIES = capacitiesOf(cat);
   const fmt = new Intl.DateTimeFormat("en-US", {
     timeZone,
     hour: "numeric",
@@ -84,8 +94,8 @@ export function computePatterns(
   let restocks = 0;
 
   for (const e of events) {
-    if (!findStore(e.storeId)) continue;
-    const sku = findSku(e.part)?.sku;
+    if (!findStore(e.storeId, cat)) continue;
+    const sku = findSku(e.part, cat);
     if (!sku || !matrix[sku.colorKey]?.[sku.capacity]) continue;
     if (filter.storeId && e.storeId !== filter.storeId) continue;
     if (filter.colorKey && sku.colorKey !== filter.colorKey) continue;

@@ -1,4 +1,4 @@
-import { ALL_SKUS, STORES } from "../src/catalog.ts";
+import { ALL_SKUS, DEFAULT_CATALOG, STORES } from "../src/catalog.ts";
 import {
   DEFAULT_SETTINGS,
   getLastRun,
@@ -41,16 +41,25 @@ Deno.test("sanitizeSettings: drops unknown pairs, dedupes, orders", () => {
   assertEquals(s, {
     enabled: false,
     watch: ["R466|MK2D4X/A", "R466|MK2E4X/A", "R509|MK2D4X/A"],
+    intervalMinutes: 1,
+    catalog: DEFAULT_CATALOG,
   });
 });
 
 Deno.test("sanitizeSettings: bad input yields defaults / empty watch", () => {
   assertEquals(sanitizeSettings(null), DEFAULT_SETTINGS);
   assertEquals(sanitizeSettings("x"), DEFAULT_SETTINGS);
-  assertEquals(sanitizeSettings({}), { enabled: true, watch: [] });
+  assertEquals(sanitizeSettings({}), {
+    enabled: true,
+    watch: [],
+    intervalMinutes: 1,
+    catalog: DEFAULT_CATALOG,
+  });
   assertEquals(sanitizeSettings({ enabled: "yes", watch: "R466|MK2D4X/A" }), {
     enabled: false,
     watch: [],
+    intervalMinutes: 1,
+    catalog: DEFAULT_CATALOG,
   });
 });
 
@@ -68,6 +77,8 @@ Deno.test("sanitizeSettings: legacy {skus, stores} becomes their product", () =>
       "R509|MK2D4X/A",
       "R509|MK2E4X/A",
     ],
+    intervalMinutes: 1,
+    catalog: DEFAULT_CATALOG,
   });
   // Legacy settings predate Masonville, which therefore starts unwatched.
   const full = sanitizeSettings({
@@ -102,6 +113,8 @@ Deno.test("KV round trip for settings and last run", async () => {
     assertEquals(await getSettings(kv), {
       enabled: false,
       watch: ["R466|MK2D4X/A"],
+      intervalMinutes: 1,
+      catalog: DEFAULT_CATALOG,
     });
 
     const run: RunStatus = {
@@ -131,6 +144,8 @@ Deno.test("getSettings migrates legacy stored settings", async () => {
     assertEquals(await getSettings(kv), {
       enabled: true,
       watch: ["R466|MK2D4X/A", "R351|MK2D4X/A"],
+      intervalMinutes: 1,
+      catalog: DEFAULT_CATALOG,
     });
   } finally {
     kv.close();
@@ -148,6 +163,8 @@ Deno.test("getSettings defaults watches when stored pairs use the previous catal
     assertEquals((await kv.get(["settings"])).value, {
       enabled: true,
       watch: DEFAULT_SETTINGS.watch,
+      intervalMinutes: 1,
+      catalog: DEFAULT_CATALOG,
     });
   } finally {
     kv.close();
@@ -157,7 +174,12 @@ Deno.test("getSettings defaults watches when stored pairs use the previous catal
 Deno.test("toggleWatch adds, removes and ignores unknown pairs", async () => {
   const kv = await Deno.openKv(":memory:");
   try {
-    await saveSettings(kv, { enabled: true, watch: [] });
+    await saveSettings(kv, {
+      enabled: true,
+      watch: [],
+      intervalMinutes: 1,
+      catalog: DEFAULT_CATALOG,
+    });
     let s = await toggleWatch(kv, "R509", "MK2D4X/A");
     assertEquals(s.watch, ["R509|MK2D4X/A"]);
     s = await toggleWatch(kv, "R466", "MK2E4X/A");
