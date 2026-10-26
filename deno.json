@@ -5,5 +5,8 @@
     "dev": "deno run --unstable-kv --unstable-cron --allow-net --allow-env --watch main.ts",
     "test": "deno test --unstable-kv --allow-env",
     "check": "deno check main.ts src/*.ts"
+  },
+  "imports": {
+    "@deno/kv-oauth": "jsr:@deno/kv-oauth@^0.11.0"
   }
 }

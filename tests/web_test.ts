@@ -423,3 +423,35 @@ Deno.test("auth: 401 without/with wrong password; 503 on public host without one
     }
   });
 });
+
+Deno.test("github login: misconfigured is 503, unauthenticated redirects to /signin", async () => {
+  await withKv(async (kv) => {
+    const gh = { githubClientId: "id", githubClientSecret: "secret" };
+    const noUsers = createHandler(kv, {
+      auth: { ...gh, allowedGithubUsers: "" },
+    });
+    assertEquals(
+      (await noUsers(new Request("https://app.example/"))).status,
+      503,
+    );
+
+    const h = createHandler(kv, { auth: { ...gh, allowedGithubUsers: "me" } });
+    const r = await h(new Request("https://app.example/"));
+    assertEquals(r.status, 303);
+    assertEquals(r.headers.get("Location"), "/signin");
+    const post401 = await h(
+      new Request("https://app.example/run", { method: "POST" }),
+    );
+    assertEquals(post401.status, 401);
+    const forged = await h(
+      new Request("https://app.example/", {
+        headers: { Cookie: "__Host-site-session=nope" },
+      }),
+    );
+    assertEquals(forged.status, 303);
+    assertEquals(
+      (await h(new Request("https://app.example/health"))).status,
+      200,
+    );
+  });
+});

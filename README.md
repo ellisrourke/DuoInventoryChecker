@@ -79,15 +79,32 @@ choose which store/model combinations send alerts.
    to the app. The settings page and alert state are stored there.
 2. **Environment variables** (project settings):
 
-   | Variable              | Required       | Purpose                                                                                                                                                          |
-   | --------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-   | `ADMIN_PASSWORD`      | yes (deployed) | Password for the app (any username). Without it, only localhost is served; other hosts get a 503                                                                 |
-   | `DISCORD_WEBHOOK_URL` | no             | Fallback Discord webhook URL (normally set in the Settings tab). Posts to a channel when an item newly comes into stock; the Discord iPhone app pushes it to you |
+   | Variable                                   | Required          | Purpose                                                                                                                                                          |
+   | ------------------------------------------ | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | recommended       | GitHub OAuth app credentials (see **Login** below)                                                                                                               |
+   | `ALLOWED_GITHUB_USERS`                     | with GitHub login | Comma-separated GitHub usernames allowed in                                                                                                                      |
+   | `ADMIN_PASSWORD`                           | alternative       | Password for the app (any username). Without it, only localhost is served; other hosts get a 503                                                                 |
+   | `DISCORD_WEBHOOK_URL`                      | no                | Fallback Discord webhook URL (normally set in the Settings tab). Posts to a channel when an item newly comes into stock; the Discord iPhone app pushes it to you |
 
 3. Open the deployment URL in the browser, allow notifications in **Settings**,
    and pick the models/stores to watch. Keep the dashboard open to receive
    browser alerts, or set up Discord (below) for phone alerts. The cron job
    shows up under the project's **Cron** tab.
+
+## Login
+
+Set up GitHub login (preferred) or a shared password. With neither, only
+localhost is served and any other host returns a 503.
+
+1. On GitHub: **Settings → Developer settings → OAuth Apps → New OAuth App**.
+   Homepage URL: your deployment URL. Authorization callback URL:
+   `https://<your-app>.deno.dev/callback`.
+2. Set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` and
+   `ALLOWED_GITHUB_USERS=you,someone-else` in the Deno Deploy env vars.
+3. Visit the app; you're redirected to GitHub and back. Only listed users get in
+   (others see a 403). **Sign out** is in the header.
+
+If the GitHub variables are set they take precedence over `ADMIN_PASSWORD`.
 
 ## Local development
 
