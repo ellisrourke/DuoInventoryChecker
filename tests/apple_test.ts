@@ -259,3 +259,11 @@ Deno.test("fetchAllStock: first request failure throws", async () => {
     AppleError,
   );
 });
+
+Deno.test("buildPickupUrl: region selects the storefront", () => {
+  assert(
+    buildPickupUrl("R001", ["X"], true, "us").startsWith(
+      "https://www.apple.com/us/shop/retail/pickup-message?",
+    ),
+  );
+});

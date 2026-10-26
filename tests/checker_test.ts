@@ -369,13 +369,18 @@ Deno.test("sendDiscord: posts the alert and never throws", async () => {
     { storeId: "R466", storeName: "Brisbane", part: "MK2F4X/A" },
   ])!;
   let body = "";
-  const accepted = await sendDiscord("https://example.test/hook", alert, "https://shop", (
-    _u,
-    init,
-  ) => {
-    body = String(init?.body);
-    return Promise.resolve(new Response(null, { status: 204 }));
-  });
+  const accepted = await sendDiscord(
+    "https://example.test/hook",
+    alert,
+    "https://shop",
+    (
+      _u,
+      init,
+    ) => {
+      body = String(init?.body);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    },
+  );
   assertEquals(accepted, true);
   assert(body.includes("iPhone Duo in stock at 1 store"));
   const rejected = await sendDiscord(

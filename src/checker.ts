@@ -3,7 +3,7 @@
 
 import { fetchAllStock, type FetchFn } from "./apple.ts";
 import { buildAlert, sendDiscord } from "./alert.ts";
-import { ALL_SKUS, findStore, PRODUCTS, STORES } from "./catalog.ts";
+import { type Catalog, findStore, shopUrl } from "./catalog.ts";
 import {
   appendHistory,
   appendRestocks,
@@ -52,13 +52,14 @@ export async function runCheck(
 
   try {
     const settings = await getSettings(kv);
+    const cat = settings.catalog;
     const prevRun = await getLastRun(kv);
 
     try {
       const result = await fetchAllStock(
-        STORES.map((s) => s.id),
-        ALL_SKUS.map((s) => s.part),
-        { fetchFn: deps.fetchFn, sleep: deps.sleep },
+        cat.stores.map((s) => s.id),
+        cat.skus.map((s) => s.part),
+        { region: cat.region, fetchFn: deps.fetchFn, sleep: deps.sleep },
       );
       status.storesChecked = result.storesChecked;
       status.storesMissing = result.storesMissing;
@@ -84,8 +85,8 @@ export async function runCheck(
       // Hits: available pairs that are watched (none while alerts are off).
       if (settings.enabled) {
         const watched = new Set(settings.watch);
-        for (const store of STORES) {
-          for (const sku of ALL_SKUS) {
+        for (const store of cat.stores) {
+          for (const sku of cat.skus) {
             if (!watched.has(pairKey(store.id, sku.part))) continue;
             const p = next.stores[store.id]?.parts[sku.part];
             if (!result.storesChecked.includes(store.id) || !p?.available) {
@@ -107,6 +108,7 @@ export async function runCheck(
           at,
           checked: result.storesChecked,
           snapshot: next,
+          cat,
         })
         : [];
       if (history.length > 0) await appendHistory(kv, history);
@@ -129,12 +131,14 @@ export async function runCheck(
       status.newHits = status.hits.filter((h) =>
         !prevKeys.has(pairKey(h.storeId, h.part))
       );
-      const webhook = Deno.env.get("DISCORD_WEBHOOK_URL");
+      const webhook = settings.discordWebhookUrl ??
+        Deno.env.get("DISCORD_WEBHOOK_URL");
       const alert = buildAlert(
         status.newHits.filter((h) => result.storesChecked.includes(h.storeId)),
+        cat,
       );
       if (webhook && settings.enabled && alert) {
-        await sendDiscord(webhook, alert, PRODUCTS[0].shopUrl, deps.fetchFn);
+        await sendDiscord(webhook, alert, shopUrl(cat), deps.fetchFn);
       }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -169,7 +173,12 @@ export async function runCheck(
 function historyEntries(
   prevHits: Hit[],
   hits: Hit[],
-  ctx: { at: string; checked: string[]; snapshot: StockSnapshot },
+  ctx: {
+    at: string;
+    checked: string[];
+    snapshot: StockSnapshot;
+    cat: Catalog;
+  },
 ): HistoryEntry[] {
   const before = new Set(prevHits.map((h) => pairKey(h.storeId, h.part)));
   const now = new Set(hits.map((h) => pairKey(h.storeId, h.part)));
@@ -182,7 +191,9 @@ function historyEntries(
   for (const key of before) {
     if (now.has(key)) continue;
     const p = parsePairKey(key);
-    if (!p || !ctx.checked.includes(p.storeId) || !findStore(p.storeId)) {
+    if (
+      !p || !ctx.checked.includes(p.storeId) || !findStore(p.storeId, ctx.cat)
+    ) {
       continue;
     }
     // Still available but no longer a hit (e.g. unwatched): not a sell-out.

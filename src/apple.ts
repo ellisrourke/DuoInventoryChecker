@@ -21,12 +21,26 @@ export class AppleError extends Error {
   }
 }
 
-const ENDPOINT = "https://www.apple.com/au/shop/retail/pickup-message";
+const DEFAULT_REGION = "au";
+
+function endpoint(region: string): string {
+  return `https://www.apple.com/${region}/shop/retail/pickup-message`;
+}
+
+function headers(region: string) {
+  const country = region.slice(0, 2) === "uk"
+    ? "GB"
+    : region.slice(0, 2).toUpperCase();
+  return {
+    ...HEADERS,
+    "Accept-Language": `en-${country},en;q=0.9`,
+  };
+}
+
 const HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Accept": "application/json",
-  "Accept-Language": "en-AU,en;q=0.9",
 };
 const MAX_RETRIES = 2;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -35,6 +49,7 @@ export function buildPickupUrl(
   anchorStore: string,
   parts: string[],
   searchNearby = true,
+  region = DEFAULT_REGION,
 ): string {
   const p = new URLSearchParams();
   p.set("fae", "true");
@@ -45,7 +60,7 @@ export function buildPickupUrl(
   p.set("mts.0", "regular");
   p.set("mts.1", "sticky");
   p.set("fts", "true");
-  return `${ENDPOINT}?${p}`;
+  return `${endpoint(region)}?${p}`;
 }
 
 // deno-lint-ignore no-explicit-any
@@ -88,6 +103,8 @@ export function parsePickupResponse(json: unknown): StoreAvailability[] {
 }
 
 interface Opts {
+  /** Apple storefront path such as "au" or "us". */
+  region?: string;
   fetchFn?: FetchFn;
   sleep?: Sleep;
 }
@@ -102,13 +119,14 @@ export async function fetchPickup(
 ): Promise<StoreAvailability[]> {
   const fetchFn = opts.fetchFn ?? fetch;
   const sleep = opts.sleep ?? defaultSleep;
-  const url = buildPickupUrl(anchorStore, parts, true);
+  const region = opts.region ?? DEFAULT_REGION;
+  const url = buildPickupUrl(anchorStore, parts, true, region);
 
   for (let attempt = 0;; attempt++) {
     let res: Response;
     try {
       res = await fetchFn(url, {
-        headers: HEADERS,
+        headers: headers(region),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (e) {
