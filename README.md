@@ -44,8 +44,8 @@ sequence and should be double-checked.
   broken down by colour and size, hour of day, and day of week (Brisbane time),
   with store, colour and size filters.
 - **Settings**: the master alerts switch, a bulk tool to watch or unwatch many
-  combinations at once, browser notification permission, a "Test stock alert"
-  button, and "Run check now".
+  combinations at once, browser notification permission, browser and Discord
+  test alerts, and "Run check now".
 
 ## How it behaves
 
