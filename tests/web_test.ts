@@ -11,14 +11,12 @@ import { assert, assertEquals } from "./_assert.ts";
 
 const PW = "s3cret";
 const auth = { Authorization: "Basic " + btoa("me:" + PW) };
-const ntfy = { server: "https://ntfy.example", topic: "my-topic" };
 const goodRun: RunStatus = {
   at: "2026-01-01T15:00:00Z",
   ok: true,
   hits: [],
   storesChecked: [],
   storesMissing: [],
-  notified: false,
   consecutiveFailures: 0,
 };
 
@@ -49,7 +47,7 @@ async function withKv(fn: (kv: Deno.Kv) => Promise<void>) {
 
 Deno.test("auth: 401 without credentials, 401 with wrong password", async () => {
   await withKv(async (kv) => {
-    const h = createHandler(kv, { adminPassword: PW, ntfy });
+    const h = createHandler(kv, { adminPassword: PW });
     const r = await h(new Request("http://localhost/"));
     assertEquals(r.status, 401);
     assert(r.headers.get("WWW-Authenticate")?.startsWith("Basic"));
@@ -70,7 +68,7 @@ Deno.test("503 when no password configured; /health stays public", async () => {
     const prev = Deno.env.get("ADMIN_PASSWORD");
     Deno.env.delete("ADMIN_PASSWORD");
     try {
-      const h = createHandler(kv, { ntfy: null });
+      const h = createHandler(kv);
       assertEquals((await h(new Request("http://localhost/"))).status, 503);
       const health = await h(new Request("http://localhost/health"));
       assertEquals(health.status, 200);
@@ -83,7 +81,7 @@ Deno.test("503 when no password configured; /health stays public", async () => {
 
 Deno.test("404 and 405", async () => {
   await withKv(async (kv) => {
-    const h = createHandler(kv, { adminPassword: PW, ntfy });
+    const h = createHandler(kv, { adminPassword: PW });
     assertEquals(
       (await h(new Request("http://localhost/nope", { headers: auth }))).status,
       404,
@@ -99,14 +97,14 @@ Deno.test("404 and 405", async () => {
 
 Deno.test("POST /toggle flips a pair and redirects to the stock anchor", async () => {
   await withKv(async (kv) => {
-    const h = createHandler(kv, { adminPassword: PW, ntfy });
-    const key = pairKey("R121", "MK244VC/A");
+    const h = createHandler(kv, { adminPassword: PW });
+    const key = pairKey("R466", "MK2D4X/A");
     assert((await getSettings(kv)).watch.includes(key));
-    const r = await h(post("/toggle", "store=R121&part=MK244VC%2FA"));
+    const r = await h(post("/toggle", "store=R466&part=MK2D4X%2FA"));
     assertEquals(r.status, 303);
-    assertEquals(r.headers.get("Location"), "/?tab=stock#R121");
+    assertEquals(r.headers.get("Location"), "/?tab=stock#R466");
     assert(!(await getSettings(kv)).watch.includes(key));
-    await h(post("/toggle", "store=R121&part=MK244VC%2FA"));
+    await h(post("/toggle", "store=R466&part=MK2D4X%2FA"));
     assert((await getSettings(kv)).watch.includes(key));
     const before = (await getSettings(kv)).watch.length;
     await h(post("/toggle", "store=BOGUS&part=MK244VC%2FA"));
@@ -116,11 +114,11 @@ Deno.test("POST /toggle flips a pair and redirects to the stock anchor", async (
 
 Deno.test("POST /settings: bulk replace/add/remove and enabled", async () => {
   await withKv(async (kv) => {
-    const h = createHandler(kv, { adminPassword: PW, ntfy });
+    const h = createHandler(kv, { adminPassword: PW });
     const r = await h(
       post(
         "/settings",
-        "mode=replace&color=nightsky&size=256GB&size=512GB&store=R121&store=R999&size=BOGUS",
+        "mode=replace&color=nightsky&size=256GB&size=512GB&store=R466&store=R999&size=BOGUS",
         { Origin: "http://localhost" },
       ),
     );
@@ -129,29 +127,29 @@ Deno.test("POST /settings: bulk replace/add/remove and enabled", async () => {
     let s = await getSettings(kv);
     assertEquals(s.enabled, true);
     assertEquals(s.watch, [
-      pairKey("R121", "MK254VC/A"),
-      pairKey("R121", "MK274VC/A"),
+      pairKey("R466", "MK2E4X/A"),
+      pairKey("R466", "MK2G4X/A"),
     ]);
-    await h(post("/settings", "mode=add&color=starwhite&size=1TB&store=R120"));
+    await h(post("/settings", "mode=add&color=starwhite&size=1TB&store=R509"));
     s = await getSettings(kv);
     assertEquals(s.watch, [
-      pairKey("R121", "MK254VC/A"),
-      pairKey("R121", "MK274VC/A"),
-      pairKey("R120", "MK284VC/A"),
+      pairKey("R466", "MK2E4X/A"),
+      pairKey("R466", "MK2G4X/A"),
+      pairKey("R509", "MK2H4X/A"),
     ]);
     await h(
-      post("/settings", "mode=remove&color=nightsky&size=256GB&store=R121"),
+      post("/settings", "mode=remove&color=nightsky&size=256GB&store=R466"),
     );
     assertEquals((await getSettings(kv)).watch, [
-      pairKey("R121", "MK274VC/A"),
-      pairKey("R120", "MK284VC/A"),
+      pairKey("R466", "MK2G4X/A"),
+      pairKey("R509", "MK2H4X/A"),
     ]);
     // Bulk posts leave `enabled` alone; the alerts form sets it.
     await h(post("/settings", "alerts_form=1"));
     s = await getSettings(kv);
     assertEquals(s.enabled, false);
     assertEquals(s.watch.length, 2);
-    await h(post("/settings", "mode=add&color=nightsky&size=2TB&store=R121"));
+    await h(post("/settings", "mode=add&color=nightsky&size=2TB&store=R466"));
     assertEquals((await getSettings(kv)).enabled, false);
     await h(post("/settings", "alerts_form=1&enabled=on"));
     s = await getSettings(kv);
@@ -167,7 +165,7 @@ Deno.test("POST /settings: bulk replace/add/remove and enabled", async () => {
 
 Deno.test("CSRF: mismatched Origin/Referer rejected", async () => {
   await withKv(async (kv) => {
-    const h = createHandler(kv, { adminPassword: PW, ntfy });
+    const h = createHandler(kv, { adminPassword: PW });
     const r = await h(
       post("/settings", "mode=replace", { Origin: "https://evil.example" }),
     );
@@ -176,36 +174,7 @@ Deno.test("CSRF: mismatched Origin/Referer rejected", async () => {
       post("/run", "", { Referer: "https://evil.example/x" }),
     );
     assertEquals(r2.status, 403);
-    assertEquals((await getSettings(kv)).watch.length, 80);
-  });
-});
-
-Deno.test("POST /test-notify uses injected ntfy and fetchFn", async () => {
-  await withKv(async (kv) => {
-    const calls: { url: string; body: string }[] = [];
-    const fetchFn = ((url: string | URL | Request, init?: RequestInit) => {
-      calls.push({ url: String(url), body: String(init?.body) });
-      return Promise.resolve(new Response("{}", { status: 200 }));
-    }) as typeof fetch;
-    const h = createHandler(kv, { adminPassword: PW, ntfy, fetchFn });
-    const r = await h(post("/test-notify", ""));
-    assertEquals(r.headers.get("Location"), "/?tab=stock&tested=1");
-    assertEquals(calls.length, 1);
-    assert(calls[0].url.startsWith("https://ntfy.example"));
-    assertEquals(JSON.parse(calls[0].body).topic, "my-topic");
-
-    const failing = createHandler(kv, {
-      adminPassword: PW,
-      ntfy,
-      fetchFn: (() =>
-        Promise.resolve(new Response("nope", { status: 500 }))) as typeof fetch,
-    });
-    const r2 = await failing(post("/test-notify", ""));
-    assert(r2.headers.get("Location")!.startsWith("/?tab=stock&error="));
-
-    const none = createHandler(kv, { adminPassword: PW, ntfy: null });
-    const r3 = await none(post("/test-notify", ""));
-    assert(r3.headers.get("Location")!.startsWith("/?tab=stock&error="));
+    assertEquals((await getSettings(kv)).watch.length, 24);
   });
 });
 
@@ -214,7 +183,6 @@ Deno.test("POST /run calls injected runCheck", async () => {
     let n = 0;
     const h = createHandler(kv, {
       adminPassword: PW,
-      ntfy,
       runCheck: () => {
         n++;
         return Promise.resolve(goodRun);
@@ -241,54 +209,54 @@ async function seed(kv: Deno.Kv) {
   await saveSnapshot(kv, {
     at: ago(0),
     stores: {
-      R121: {
+      R466: {
         checkedAt: ago(0),
         parts: {
-          "MK244VC/A": { available: true, quote: "Today" },
-          "MK254VC/A": { available: true, quote: "Today" },
-          "MK264VC/A": { available: false },
+          "MK2D4X/A": { available: true, quote: "Today" },
+          "MK2E4X/A": { available: true, quote: "Today" },
+          "MK2F4X/A": { available: false },
         },
       },
     },
   });
   await appendHistory(kv, [
-    { at: ago(90), kind: "in_stock", storeId: "R121", part: "MK244VC/A" },
-    { at: ago(80), kind: "sold_out", storeId: "R121", part: "MK244VC/A" },
+    { at: ago(90), kind: "in_stock", storeId: "R466", part: "MK2D4X/A" },
+    { at: ago(80), kind: "sold_out", storeId: "R466", part: "MK2D4X/A" },
     { at: ago(70), kind: "warning", message: "Checks failing <b>10</b>" },
   ]);
   await appendRestocks(kv, [
-    { at: "2026-01-09T14:00:00Z", storeId: "R121", part: "MK244VC/A" }, // 9am
-    { at: "2026-01-09T14:00:00Z", storeId: "R121", part: "MK254VC/A" },
-    { at: "2026-01-08T14:00:00Z", storeId: "R120", part: "MK244VC/A" },
-    { at: "2026-01-08T14:00:00Z", storeId: "R120", part: "MK2C4VC/A" },
+    { at: "2026-01-09T14:00:00Z", storeId: "R466", part: "MK2D4X/A" }, // midnight
+    { at: "2026-01-09T14:00:00Z", storeId: "R466", part: "MK2E4X/A" },
+    { at: "2026-01-08T14:00:00Z", storeId: "R509", part: "MK2D4X/A" },
+    { at: "2026-01-08T14:00:00Z", storeId: "R509", part: "MK2L4X/A" },
   ]);
 }
 
 Deno.test("tab: stock shows check marks and option counts", async () => {
   await withKv(async (kv) => {
     await seed(kv);
-    const h = createHandler(kv, { adminPassword: PW, ntfy, now: () => NOW });
+    const h = createHandler(kv, { adminPassword: PW, now: () => NOW });
     const html = await get(h, "/");
     assert(html.includes("✓"));
     assert(html.includes("2 options available"));
     assert(
       html.includes(
-        "2</strong> colour/size options available across 10 stores",
+        "2</strong> colour/size options available across 3 stores",
       ),
     );
-    assert(html.includes('id="R121"'));
+    assert(html.includes('id="R466"'));
     assert(html.includes("Last restock"));
     assert(html.includes('http-equiv="refresh"'));
-    assert(html.includes("Eaton Centre"));
+    assert(html.includes("Brisbane"));
     assert(html.includes("google.com/maps"));
     const u = await get(h, "/?tab=nonsense");
-    assert(u.includes("options available across 10 stores"));
+    assert(u.includes("options available across 3 stores"));
   });
 });
 
 Deno.test("tab: stock with nothing in stock", async () => {
   await withKv(async (kv) => {
-    const h = createHandler(kv, { adminPassword: PW, ntfy });
+    const h = createHandler(kv, { adminPassword: PW });
     const html = await get(h, "/?tab=stock");
     assert(html.includes("No check has run yet"));
     assert(html.includes("None available"));
@@ -299,13 +267,13 @@ Deno.test("tab: stock with nothing in stock", async () => {
 Deno.test("tab: changes lists history with badges", async () => {
   await withKv(async (kv) => {
     await seed(kv);
-    const h = createHandler(kv, { adminPassword: PW, ntfy, now: () => NOW });
+    const h = createHandler(kv, { adminPassword: PW, now: () => NOW });
     const html = await get(h, "/?tab=changes");
     assert(html.includes("Notification history"));
     assert(html.includes("IN STOCK"));
     assert(html.includes("SOLD OUT"));
     assert(html.includes("WARNING"));
-    assert(html.includes("Star White 256GB at Eaton Centre"));
+    assert(html.includes("Star White 256GB at Brisbane"));
     assert(html.includes("Checks failing &lt;b&gt;10&lt;/b&gt;"));
     assert(!html.includes("http-equiv"));
   });
@@ -314,20 +282,20 @@ Deno.test("tab: changes lists history with badges", async () => {
 Deno.test("tab: patterns counts and filters", async () => {
   await withKv(async (kv) => {
     await seed(kv);
-    const h = createHandler(kv, { adminPassword: PW, ntfy, now: () => NOW });
+    const h = createHandler(kv, { adminPassword: PW, now: () => NOW });
     const all = await get(h, "/?tab=patterns");
     assert(all.includes("When does stock come in?"));
     assert(all.includes("Based on 4 restocks"));
-    assert(all.includes("around <b>9am–10am</b>"));
-    assert(all.includes("<b>Thursday</b>"));
-    const store = await get(h, "/?tab=patterns&store=R120");
+    assert(all.includes("around <b>12am–1am</b>"));
+    assert(all.includes("<b>Friday</b>"));
+    const store = await get(h, "/?tab=patterns&store=R509");
     assert(store.includes("Based on 2 restocks"));
-    assert(store.includes('<option value="R120" selected>'));
+    assert(store.includes('<option value="R509" selected>'));
     const color = await get(h, "/?tab=patterns&color=nightsky");
     assert(color.includes("Based on 2 restocks"));
     const size = await get(
       h,
-      "/?tab=patterns&size=2TB&color=nightsky&store=R120",
+      "/?tab=patterns&size=2TB&color=nightsky&store=R509",
     );
     assert(size.includes("Based on 1 restock."));
     const none = await get(h, "/?tab=patterns&size=1TB");
@@ -339,14 +307,52 @@ Deno.test("tab: settings renders status and redirects return to tab", async () =
   await withKv(async (kv) => {
     const h = createHandler(kv, {
       adminPassword: PW,
-      ntfy,
       runCheck: () => Promise.resolve(goodRun),
     });
     const html = await get(h, "/?tab=settings");
     assert(html.includes("Bulk watch tool"));
-    assert(html.includes("my-topic"));
+    assert(html.includes("Enable browser notifications"));
+    assert(html.includes("Notifications require permission"));
     const r = await h(post("/run", "return=settings"));
     assertEquals(r.headers.get("Location"), "/?tab=settings&ran=1");
+  });
+});
+
+Deno.test("GET /api/status provides a formatted browser notification", async () => {
+  await withKv(async (kv) => {
+    await saveLastRun(kv, {
+      ...goodRun,
+      newHits: [{
+        storeId: "R466",
+        storeName: "Brisbane",
+        part: "MK2D4X/A",
+      }],
+      storesChecked: ["R466"],
+    });
+    const h = createHandler(kv, { adminPassword: PW });
+    const response = await h(
+      new Request("http://localhost/api/status", { headers: auth }),
+    );
+    const body = await response.json();
+    assertEquals(body.notification, {
+      title: "iPhone Duo in stock at 1 store",
+      body: "Star White 256GB: Brisbane",
+    });
+
+    await saveLastRun(kv, {
+      ...goodRun,
+      newHits: [{
+        storeId: "R466",
+        storeName: "Brisbane",
+        part: "MK2D4X/A",
+      }],
+      storesChecked: [],
+      storesMissing: ["R466"],
+    });
+    const stale = await h(
+      new Request("http://localhost/api/status", { headers: auth }),
+    );
+    assertEquals((await stale.json()).notification, null);
   });
 });
 
@@ -357,20 +363,19 @@ Deno.test("escaping: malicious lastRun error and query values", async () => {
       ok: false,
       error: "<script>alert(1)</script>",
       hits: [{
-        storeId: "R121",
-        storeName: "Eaton <b>Centre</b>",
-        part: "MK244VC/A",
+        storeId: "R466",
+        storeName: "Brisbane <b>Store</b>",
+        part: "MK2D4X/A",
       }],
       consecutiveFailures: 3,
     });
-    const h = createHandler(kv, { adminPassword: PW, ntfy: null });
+    const h = createHandler(kv, { adminPassword: PW });
     for (const tab of ["stock", "changes", "patterns", "settings"]) {
       const html = await get(h, `/?tab=${tab}&error=%3Cimg%20src%3Dx%3E`);
       assert(html.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));
       assert(!html.includes("<script>alert(1)"));
       assert(html.includes("&lt;img src=x&gt;"));
       assert(!html.includes("<img src=x>"));
-      assert(html.includes("ntfy is not configured"));
     }
     const s = await get(h, "/?tab=settings");
     assert(

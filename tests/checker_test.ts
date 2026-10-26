@@ -6,18 +6,17 @@ import { getSnapshot } from "../src/stock.ts";
 import fixture from "./fixtures/pickup_r121.json" with { type: "json" };
 import { assert, assertEquals } from "./_assert.ts";
 
-const NTFY = { server: "https://ntfy.test", topic: "duo" };
 const noSleep = () => Promise.resolve();
 const ALL_WATCH = STORES.flatMap((s) =>
   ALL_SKUS.map((k) => `${s.id}|${k.part}`)
 );
 
-interface Call {
-  url: string;
-  body?: Record<string, unknown>;
-}
-
-const single = (id: string, name: string, available: boolean) =>
+const single = (
+  id: string,
+  name: string,
+  part: string,
+  available: boolean,
+) =>
   new Response(JSON.stringify({
     body: {
       content: {
@@ -26,8 +25,8 @@ const single = (id: string, name: string, available: boolean) =>
             storeNumber: id,
             storeName: name,
             partsAvailability: {
-              "MK244VC/A": {
-                partNumber: "MK244VC/A",
+              [part]: {
+                partNumber: part,
                 pickupDisplay: available ? "available" : "unavailable",
                 pickupSearchQuote: available ? "Available Today" : "No",
               },
@@ -39,44 +38,43 @@ const single = (id: string, name: string, available: boolean) =>
   }));
 
 /**
- * Mock Apple + ntfy. The fixture covers 8 stores; R464 and R489 need
- * follow-up requests. `state` controls those and the main fixture.
+ * Mock Apple. The anchor response includes Brisbane; Carindale and Robina
+ * need follow-up requests. `state` controls availability for each store.
  */
 function makeMock() {
   const state = {
-    r464: false,
-    r489: false,
+    r509: false,
+    r351: false,
     broken: false,
-    failR464: false,
+    failR351: false,
     anchorAvailable: true,
   };
-  const calls: Call[] = [];
   const requested: string[] = [];
   const fetchFn: typeof fetch = (input, init) => {
     const url = String(input);
-    if (url.startsWith(NTFY.server)) {
-      calls.push({ url, body: JSON.parse(init!.body as string) });
-      return Promise.resolve(new Response("{}"));
-    }
-    calls.push({ url });
     if (state.broken) return Promise.resolve(new Response("<html/>"));
     const store = new URL(url).searchParams.get("store")!;
     requested.push(store);
-    if (store === "R464") {
+    if (store === "R509") {
       return Promise.resolve(
-        state.failR464
-          ? new Response("", { status: 500 })
-          : single("R464", "Conestoga", state.r464),
+        single("R509", "Carindale", "MK2L4X/A", state.r509),
       );
     }
-    if (store === "R489") {
-      return Promise.resolve(single("R489", "Masonville", state.r489));
+    if (store === "R351") {
+      return Promise.resolve(
+        state.failR351
+          ? new Response("", { status: 500 })
+          : single("R351", "Robina", "MK2D4X/A", state.r351),
+      );
     }
     const body = structuredClone(fixture);
+    const brisbane = body.body.content.pickupMessage.stores[0];
+    brisbane.storeNumber = "R466";
+    brisbane.storeName = "Brisbane";
+    brisbane.city = "Brisbane City";
     if (!state.anchorAvailable) {
-      const eaton = body.body.content.pickupMessage.stores[0];
       // deno-lint-ignore no-explicit-any
-      (eaton.partsAvailability as any)["MK264VC/A"].pickupDisplay =
+      (brisbane.partsAvailability as any)["MK2F4X/A"].pickupDisplay =
         "unavailable";
     }
     return Promise.resolve(new Response(JSON.stringify(body)));
@@ -85,7 +83,6 @@ function makeMock() {
     state,
     fetchFn,
     requested,
-    ntfyCalls: () => calls.filter((c) => c.body),
   };
 }
 
@@ -105,76 +102,64 @@ Deno.test("runCheck: disabled still fetches all stores, but no push and no histo
   await withKv(async (kv) => {
     await saveSettings(kv, { enabled: false, watch: ALL_WATCH });
     const m = makeMock();
-    m.state.r464 = true;
+    m.state.r351 = true;
     const r = await runCheck(kv, {
       fetchFn: m.fetchFn,
       sleep: noSleep,
-      ntfy: NTFY,
       now: at(0),
     });
-    assertEquals(m.requested, ["R121", "R464", "R489"]);
+    assertEquals(m.requested, ["R466", "R509", "R351"]);
     assert(r.ok);
     assertEquals(r.hits, []);
-    assertEquals(r.notified, false);
-    assertEquals(r.storesChecked.length, 10);
-    assertEquals(m.ntfyCalls().length, 0);
+    assertEquals(r.storesChecked.length, 3);
     assertEquals(await listHistory(kv, { now: T0 }), []);
     const snap = await getSnapshot(kv);
-    assertEquals(Object.keys(snap!.stores).length, 10);
-    assertEquals(snap!.stores["R464"].parts["MK244VC/A"].available, true);
+    assertEquals(Object.keys(snap!.stores).length, 3);
+    assertEquals(snap!.stores["R351"].parts["MK2D4X/A"].available, true);
     assertEquals((await getLastRun(kv))?.ok, true);
   });
 });
 
-Deno.test("runCheck: watched hits push every run, one in_stock entry, then sold_out", async () => {
+Deno.test("runCheck: records each hit, logs stock changes, then sold_out", async () => {
   await withKv(async (kv) => {
     await saveSettings(kv, {
       enabled: true,
-      watch: ["R121|MK264VC/A", "R350|MK2C4VC/A", "R464|MK244VC/A"],
+      watch: ["R466|MK2F4X/A", "R509|MK2L4X/A", "R351|MK2D4X/A"],
     });
     const m = makeMock();
-    m.state.r464 = true;
+    m.state.r351 = true;
+    m.state.r509 = true;
     const run = (min: number) =>
       runCheck(kv, {
         fetchFn: m.fetchFn,
         sleep: noSleep,
-        ntfy: NTFY,
         now: at(min),
       });
 
     const r1 = await run(0);
-    assert(r1.ok && r1.notified);
+    assert(r1.ok);
     assertEquals(r1.at, "2026-05-01T12:00:00.000Z");
     assertEquals(
       r1.hits.map((h) => `${h.storeId}:${h.part}`),
-      ["R121:MK264VC/A", "R350:MK2C4VC/A", "R464:MK244VC/A"],
+      ["R466:MK2F4X/A", "R509:MK2L4X/A", "R351:MK2D4X/A"],
     );
     const r2 = await run(1);
-    assert(r2.notified);
-    assertEquals(m.ntfyCalls().length, 2);
-
-    const msg = m.ntfyCalls()[0].body!;
-    assertEquals(msg.priority, 5);
-    assertEquals(msg.title, "iPhone Duo in stock at 3 GTA stores");
-    assertEquals(
-      msg.click,
-      "https://www.apple.com/ca/shop/buy-iphone/iphone-duo",
-    );
+    assertEquals(r2.hits.length, 3);
 
     let hist = await listHistory(kv, { now: at(2)() });
     assertEquals(hist.length, 3);
     assert(hist.every((h) => h.kind === "in_stock" && h.at === r1.at));
 
-    // R464 sells out, Eaton too.
-    m.state.r464 = false;
+    // Robina sells out, Brisbane too.
+    m.state.r351 = false;
     m.state.anchorAvailable = false;
     const r3 = await run(2);
-    assertEquals(r3.hits.map((h) => h.storeId), ["R350"]);
+    assertEquals(r3.hits.map((h) => h.storeId), ["R509"]);
     hist = await listHistory(kv, { now: at(3)() });
     assertEquals(hist.length, 5);
     assertEquals(
       hist.slice(0, 2).map((h) => `${h.kind}:${h.storeId}:${h.part}`).sort(),
-      ["sold_out:R121:MK264VC/A", "sold_out:R464:MK244VC/A"],
+      ["sold_out:R351:MK2D4X/A", "sold_out:R466:MK2F4X/A"],
     );
     assertEquals((await getLastRun(kv))?.hits.length, 1);
   });
@@ -188,7 +173,6 @@ Deno.test("runCheck: restock events appended on transitions only", async () => {
       runCheck(kv, {
         fetchFn: m.fetchFn,
         sleep: noSleep,
-        ntfy: null,
         now: at(min),
       });
     const events = () => listRestocks(kv, { now: at(10)() });
@@ -198,24 +182,24 @@ Deno.test("runCheck: restock events appended on transitions only", async () => {
     await run(1); // unchanged
     assertEquals(await events(), []);
 
-    m.state.r464 = true;
-    m.state.r489 = true;
+    m.state.r351 = true;
+    m.state.r509 = true;
     await run(2);
     let ev = await events();
     assertEquals(
       ev.map((e) => `${e.storeId}:${e.part}`).sort(),
-      ["R464:MK244VC/A", "R489:MK244VC/A"],
+      ["R351:MK2D4X/A", "R509:MK2L4X/A"],
     );
     assert(ev.every((e) => e.at === "2026-05-01T12:02:00.000Z"));
 
     await run(3); // still available: no new events
     assertEquals((await events()).length, 2);
 
-    m.state.r464 = false; // sold out: no event
+    m.state.r351 = false; // sold out: no event
     await run(4);
     assertEquals((await events()).length, 2);
 
-    m.state.r464 = true; // restock again
+    m.state.r351 = true; // restock again
     await run(5);
     ev = await events();
     assertEquals(ev.length, 3);
@@ -225,31 +209,30 @@ Deno.test("runCheck: restock events appended on transitions only", async () => {
 
 Deno.test("runCheck: missing store keeps old snapshot data and logs no sold_out", async () => {
   await withKv(async (kv) => {
-    await saveSettings(kv, { enabled: true, watch: ["R464|MK244VC/A"] });
+    await saveSettings(kv, { enabled: true, watch: ["R351|MK2D4X/A"] });
     const m = makeMock();
-    m.state.r464 = true;
+    m.state.r351 = true;
     const deps = (min: number) => ({
       fetchFn: m.fetchFn,
       sleep: noSleep,
-      ntfy: null,
       now: at(min),
     });
     await runCheck(kv, deps(0));
-    m.state.failR464 = true;
+    m.state.failR351 = true;
     const r = await runCheck(kv, deps(1));
     assert(r.ok);
-    assertEquals(r.storesMissing, ["R464"]);
-    // The hit is carried forward (not re-notified) while R464 is unchecked.
-    assertEquals(r.hits.map((h) => h.storeId), ["R464"]);
+    assertEquals(r.storesMissing, ["R351"]);
+    // The hit is carried forward (not re-alerted) while Robina is unchecked.
+    assertEquals(r.hits.map((h) => h.storeId), ["R351"]);
     const snap = (await getSnapshot(kv))!;
     assertEquals(snap.at, "2026-05-01T12:01:00.000Z");
-    assertEquals(snap.stores["R464"].checkedAt, "2026-05-01T12:00:00.000Z");
-    assertEquals(snap.stores["R464"].parts["MK244VC/A"].available, true);
-    assertEquals(snap.stores["R121"].checkedAt, "2026-05-01T12:01:00.000Z");
+    assertEquals(snap.stores["R351"].checkedAt, "2026-05-01T12:00:00.000Z");
+    assertEquals(snap.stores["R351"].parts["MK2D4X/A"].available, true);
+    assertEquals(snap.stores["R466"].checkedAt, "2026-05-01T12:01:00.000Z");
     const hist = await listHistory(kv, { now: at(2)() });
     assertEquals(hist.map((h) => h.kind), ["in_stock"]);
-    // R464 is back and still in stock: no duplicate in_stock entry.
-    m.state.failR464 = false;
+    // Robina is back and still in stock: no duplicate in_stock entry.
+    m.state.failR351 = false;
     await runCheck(kv, deps(2));
     const hist2 = await listHistory(kv, { now: at(3)() });
     assertEquals(hist2.map((h) => h.kind), ["in_stock"]);
@@ -258,12 +241,11 @@ Deno.test("runCheck: missing store keeps old snapshot data and logs no sold_out"
 
 Deno.test("runCheck: a failed run doesn't cause a duplicate in_stock entry", async () => {
   await withKv(async (kv) => {
-    await saveSettings(kv, { enabled: true, watch: ["R121|MK264VC/A"] });
+    await saveSettings(kv, { enabled: true, watch: ["R466|MK2F4X/A"] });
     const m = makeMock();
     const deps = (min: number) => ({
       fetchFn: m.fetchFn,
       sleep: noSleep,
-      ntfy: null,
       now: at(min),
     });
     await runCheck(kv, deps(0));
@@ -278,12 +260,11 @@ Deno.test("runCheck: a failed run doesn't cause a duplicate in_stock entry", asy
 
 Deno.test("runCheck: unwatching an in-stock pair is not logged as sold_out", async () => {
   await withKv(async (kv) => {
-    await saveSettings(kv, { enabled: true, watch: ["R121|MK264VC/A"] });
+    await saveSettings(kv, { enabled: true, watch: ["R466|MK2F4X/A"] });
     const m = makeMock();
     const deps = (min: number) => ({
       fetchFn: m.fetchFn,
       sleep: noSleep,
-      ntfy: null,
       now: at(min),
     });
     await runCheck(kv, deps(0));
@@ -294,31 +275,27 @@ Deno.test("runCheck: unwatching an in-stock pair is not logged as sold_out", asy
   });
 });
 
-Deno.test("runCheck: no hits means no ntfy", async () => {
+Deno.test("runCheck: no hits means no browser alert", async () => {
   await withKv(async (kv) => {
-    await saveSettings(kv, { enabled: true, watch: ["R121|MK244VC/A"] });
+    await saveSettings(kv, { enabled: true, watch: ["R466|MK2D4X/A"] });
     const m = makeMock();
     const r = await runCheck(kv, {
       fetchFn: m.fetchFn,
       sleep: noSleep,
-      ntfy: NTFY,
     });
     assertEquals(r.hits, []);
-    assertEquals(r.notified, false);
-    assertEquals(m.ntfyCalls().length, 0);
   });
 });
 
-Deno.test("runCheck: failure warning sent exactly once at 10 and logged, success resets", async () => {
+Deno.test("runCheck: failure warning logged once at 10, success resets", async () => {
   await withKv(async (kv) => {
-    await saveSettings(kv, { enabled: true, watch: ["R121|MK264VC/A"] });
+    await saveSettings(kv, { enabled: true, watch: ["R466|MK2F4X/A"] });
     const m = makeMock();
     m.state.broken = true;
     const run = (min = 0) =>
       runCheck(kv, {
         fetchFn: m.fetchFn,
         sleep: noSleep,
-        ntfy: NTFY,
         now: at(min),
       });
 
@@ -327,23 +304,17 @@ Deno.test("runCheck: failure warning sent exactly once at 10 and logged, success
       assert(!r.ok);
       assertEquals(r.consecutiveFailures, i);
     }
-    assertEquals(m.ntfyCalls().length, 0);
     assertEquals(await listHistory(kv, { now: at(10)() }), []);
 
     const tenth = await run(10);
     assertEquals(tenth.consecutiveFailures, 10);
-    assertEquals(m.ntfyCalls().length, 1);
-    const warn = m.ntfyCalls()[0].body!;
-    assertEquals(warn.priority, 3);
-    assert(String(warn.title).startsWith("Stock checker failing: "));
     const hist = await listHistory(kv, { now: at(11)() });
     assertEquals(hist.length, 1);
     assertEquals(hist[0].kind, "warning");
-    assertEquals(hist[0].message, warn.title);
+    assert(String(hist[0].message).startsWith("Stock checker failing: "));
 
     await run(11);
     await run(12);
-    assertEquals(m.ntfyCalls().length, 1);
     assertEquals((await listHistory(kv, { now: at(13)() })).length, 1);
 
     m.state.broken = false;
@@ -354,7 +325,7 @@ Deno.test("runCheck: failure warning sent exactly once at 10 and logged, success
   });
 });
 
-Deno.test("runCheck: failure warning is logged even without ntfy", async () => {
+Deno.test("runCheck: failure warning is logged for browser clients", async () => {
   await withKv(async (kv) => {
     const m = makeMock();
     m.state.broken = true;
@@ -362,7 +333,6 @@ Deno.test("runCheck: failure warning is logged even without ntfy", async () => {
       await runCheck(kv, {
         fetchFn: m.fetchFn,
         sleep: noSleep,
-        ntfy: null,
         now: at(i),
       });
     }
@@ -371,17 +341,46 @@ Deno.test("runCheck: failure warning is logged even without ntfy", async () => {
   });
 });
 
-Deno.test("runCheck: never throws, even if ntfy fails", async () => {
+Deno.test("runCheck: records hits for browser notifications", async () => {
   await withKv(async (kv) => {
-    await saveSettings(kv, { enabled: true, watch: ["R121|MK264VC/A"] });
+    await saveSettings(kv, { enabled: true, watch: ["R466|MK2F4X/A"] });
     const m = makeMock();
-    const fetchFn: typeof fetch = (input, init) =>
-      String(input).startsWith(NTFY.server)
-        ? Promise.resolve(new Response("no", { status: 500 }))
-        : m.fetchFn(input, init);
-    const r = await runCheck(kv, { fetchFn, sleep: noSleep, ntfy: NTFY });
+    const r = await runCheck(kv, { fetchFn: m.fetchFn, sleep: noSleep });
     assert(r.ok);
     assertEquals(r.hits.length, 1);
-    assertEquals(r.notified, false);
   });
+});
+
+Deno.test("runCheck: only newly in-stock hits are flagged for notification", async () => {
+  await withKv(async (kv) => {
+    await saveSettings(kv, { enabled: true, watch: ["R466|MK2F4X/A"] });
+    const m = makeMock();
+    const first = await runCheck(kv, { fetchFn: m.fetchFn, sleep: noSleep });
+    assertEquals(first.newHits?.length, 1);
+    const second = await runCheck(kv, { fetchFn: m.fetchFn, sleep: noSleep });
+    assertEquals(second.hits.length, 1);
+    assertEquals(second.newHits, []);
+  });
+});
+
+Deno.test("sendDiscord: posts the alert and never throws", async () => {
+  const { sendDiscord, buildAlert } = await import("../src/alert.ts");
+  const alert = buildAlert([
+    { storeId: "R466", storeName: "Brisbane", part: "MK2F4X/A" },
+  ])!;
+  let body = "";
+  await sendDiscord("https://example.test/hook", alert, "https://shop", (
+    _u,
+    init,
+  ) => {
+    body = String(init?.body);
+    return Promise.resolve(new Response(null, { status: 204 }));
+  });
+  assert(body.includes("iPhone Duo in stock at 1 store"));
+  await sendDiscord(
+    "https://example.test/hook",
+    alert,
+    "https://shop",
+    () => Promise.reject(new Error("down")),
+  );
 });

@@ -1,6 +1,7 @@
 // Password-protected UI (Stock / Recent changes / Patterns / Settings) and a
 // small JSON API. Server-rendered HTML with inline CSS; works without JS.
 
+import { buildAlert } from "./alert.ts";
 import {
   ALL_SKUS,
   CAPACITIES,
@@ -11,8 +12,6 @@ import {
   skuFor,
   STORES,
 } from "./catalog.ts";
-import type { FetchFn } from "./apple.ts";
-import { type NtfyConfig, ntfyConfigFromEnv, sendNtfy } from "./notify.ts";
 import {
   computePatterns,
   type PatternFilter,
@@ -37,20 +36,16 @@ import {
 } from "./settings.ts";
 
 export interface WebDeps {
-  /** ntfy config; `undefined` falls back to env, `null` means not configured. */
-  ntfy?: NtfyConfig | null;
   /** Admin password; `undefined` falls back to ADMIN_PASSWORD. */
   adminPassword?: string;
   /** Invoked by POST /run. */
   runCheck?: () => Promise<RunStatus>;
-  /** fetch used by POST /test-notify (defaults to global fetch, resolved at call time). */
-  fetchFn?: FetchFn;
   /** Clock override (tests, screenshots). */
   now?: () => Date;
 }
 
 const BASE_HEADERS = { "Cache-Control": "no-store" };
-const TZ = "America/Toronto";
+const TZ = "Australia/Brisbane";
 const TABS = [
   ["stock", "Stock"],
   ["changes", "Recent changes"],
@@ -174,7 +169,7 @@ function local(iso: string | Date): Local | null {
   };
 }
 
-/** "13:03" in Toronto time. */
+/** "13:03" in Brisbane time. */
 function clock(iso: string): string {
   const l = local(iso);
   return l ? `${l.hh}:${l.mm}` : iso;
@@ -226,59 +221,75 @@ const CHIPS: Record<string, { bg: string; fg: string }> = {
 const FALLBACK_CHIP = { bg: "#d5d8df", fg: "#1c1e21" };
 
 const CSS = `
-:root{color-scheme:light dark;--bg:#fff;--panel:#eef0f5;--panel2:#e2e5ed;--fg:#1d2433;--muted:#6b7385;--line:#dde1ea;--accent:#1f3a7a;--accent-soft:#e4ebfa;--ok:#4a9a5b;--ok-fg:#fff;--ok-text:#2f7d43;--bad:#b3261e;--bad-bg:#f9dcda;--ok-bg:#d9f0df;--notify-bg:#faedc4;--notify-fg:#6f5200;--warn-bg:#fff3cf;--warn-fg:#6f5200;--g:74 154 91;--bar:#2f6b4a;--bar-peak:#22a05a;--stub:#dde1ea;--chipline:#c9cdd8}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0d1017;--panel:#171c27;--panel2:#212838;--fg:#e6e9f0;--muted:#98a0b3;--line:#262d3d;--accent:#9db8ff;--accent-soft:#1d2842;--ok:#3d8c52;--ok-text:#6ccf88;--bad:#ff8a80;--bad-bg:#3d1d1b;--ok-bg:#16301f;--notify-bg:#40340f;--notify-fg:#f1cd70;--warn-bg:#3a3012;--warn-fg:#f1cd70;--g:90 190 120;--bar:#2f6b4a;--bar-peak:#3fc57a;--stub:#2a3142;--chipline:#3a4258}}
-:root[data-theme=dark]{--bg:#0d1017;--panel:#171c27;--panel2:#212838;--fg:#e6e9f0;--muted:#98a0b3;--line:#262d3d;--accent:#9db8ff;--accent-soft:#1d2842;--ok:#3d8c52;--ok-text:#6ccf88;--bad:#ff8a80;--bad-bg:#3d1d1b;--ok-bg:#16301f;--notify-bg:#40340f;--notify-fg:#f1cd70;--warn-bg:#3a3012;--warn-fg:#f1cd70;--g:90 190 120;--bar:#2f6b4a;--bar-peak:#3fc57a;--stub:#2a3142;--chipline:#3a4258}
+:root{color-scheme:light dark;--bg:#f6f7fb;--panel:#fff;--panel2:#eef0f6;--fg:#161b2b;--muted:#68708a;--line:#e3e6ef;--accent:#3b5bdb;--accent-soft:#e8edff;--ok:#1f9d55;--ok-fg:#fff;--ok-text:#17703c;--bad:#b3261e;--bad-bg:#f9dcda;--ok-bg:#dcf5e6;--notify-bg:#eef1ff;--notify-fg:#3b5bdb;--warn-bg:#fff3cf;--warn-fg:#6f5200;--g:74 154 91;--bar:#2f6b4a;--bar-peak:#22a05a;--stub:#dde1ea;--chipline:#c9cdd8}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0b0e15;--panel:#151a25;--panel2:#1e2535;--fg:#e6e9f0;--muted:#98a0b3;--line:#262d3d;--accent:#8fa8ff;--accent-soft:#1c2646;--ok:#2fae68;--ok-text:#6ccf88;--bad:#ff8a80;--bad-bg:#3d1d1b;--ok-bg:#12301f;--notify-bg:#1c2646;--notify-fg:#a9bcff;--warn-bg:#3a3012;--warn-fg:#f1cd70;--g:90 190 120;--bar:#2f6b4a;--bar-peak:#3fc57a;--stub:#2a3142;--chipline:#3a4258}}
+:root[data-theme=dark]{--bg:#0b0e15;--panel:#151a25;--panel2:#1e2535;--fg:#e6e9f0;--muted:#98a0b3;--line:#262d3d;--accent:#8fa8ff;--accent-soft:#1c2646;--ok:#2fae68;--ok-text:#6ccf88;--bad:#ff8a80;--bad-bg:#3d1d1b;--ok-bg:#12301f;--notify-bg:#1c2646;--notify-fg:#a9bcff;--warn-bg:#3a3012;--warn-fg:#f1cd70;--g:90 190 120;--bar:#2f6b4a;--bar-peak:#3fc57a;--stub:#2a3142;--chipline:#3a4258}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
-main{max-width:1200px;margin:0 auto;padding:22px 16px 40px}
+main{max-width:1100px;margin:0 auto;padding:28px 20px 48px}
 a{color:var(--accent)}
-.top{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;padding-bottom:14px;border-bottom:1px solid var(--line)}
+.top{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;padding-bottom:12px;margin-bottom:4px}
 .eyebrow{font-size:.78rem;font-weight:700;letter-spacing:.24em;color:var(--accent);margin:0 0 2px}
-h1{font-size:1.6rem;line-height:1.15;margin:0;color:var(--fg)}
+h1{font-size:2rem;font-weight:800;letter-spacing:-.02em;line-height:1.1;margin:0;color:var(--fg)}
 .checked{color:var(--muted);font-size:.95rem}
 nav.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:18px;overflow-x:auto}
 nav.tabs a{padding:14px 16px 12px;font-weight:600;color:var(--muted);text-decoration:none;border-bottom:3px solid transparent;margin-bottom:-1px;white-space:nowrap}
 nav.tabs a:hover{color:var(--fg)}
 @media (max-width:480px){nav.tabs{gap:0}nav.tabs a{padding:12px 9px 10px;font-size:14px}}
 nav.tabs a[aria-current=page]{color:var(--accent);border-bottom-color:var(--accent)}
-.summary{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 16px}
-.summary p{margin:0}
-.pill-btn{display:inline-block;background:var(--accent);color:var(--bg);font-weight:700;padding:9px 18px;border-radius:999px;text-decoration:none;font-size:.95rem}
 .note{margin:0 0 10px;padding:9px 12px;border-radius:10px;background:var(--warn-bg);color:var(--warn-fg);font-size:.93rem}
 .note.err{background:var(--bad-bg);color:var(--bad)}
 .note.ok{background:var(--ok-bg);color:var(--ok-text)}
 .muted{color:var(--muted)}
-.stores{display:grid;grid-template-columns:1fr;gap:16px}
-@media(min-width:700px){.stores{grid-template-columns:repeat(2,1fr)}}
-@media(min-width:1040px){.stores{grid-template-columns:repeat(3,1fr)}}
-.store{background:var(--panel);border-radius:18px;padding:18px 14px 14px;text-align:center;scroll-margin-top:12px}
-.store:target{outline:2px solid var(--accent)}
-.store h2{margin:0 0 6px;font-size:1.2rem;color:var(--accent)}
-.badge{display:inline-block;border:1px solid var(--chipline);border-radius:999px;padding:1px 10px;font-size:.82rem;font-weight:600;color:var(--muted)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.pill-btn{display:inline-block;background:var(--accent);color:var(--bg);font-weight:700;padding:9px 18px;border-radius:999px;text-decoration:none;font-size:.92rem;white-space:nowrap}
+.hero{box-shadow:0 1px 3px rgb(20 30 60/.06);display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:18px 20px;margin:0 0 18px}
+.runform{margin:0}.runform .pill-btn{border:0;font:inherit;font-weight:700;font-size:.92rem;cursor:pointer}
+.ghost-btn{display:inline-block;padding:8px 16px;border-radius:999px;border:1px solid var(--chipline);color:var(--fg);text-decoration:none;font-weight:600;font-size:.9rem;white-space:nowrap}
+.hero p{margin:0;flex:1 1 220px;font-size:1.2rem;font-weight:700;line-height:1.3}
+.hero.on{background:var(--ok-bg);border-color:var(--ok)}
+.hero.on p{color:var(--ok-text)}
+.pulse{width:14px;height:14px;border-radius:50%;background:var(--chipline);flex:none}
+.hero.on .pulse{background:var(--ok);box-shadow:0 0 0 0 var(--ok);animation:pulse 1.8s infinite}
+.hero.off .pulse{background:var(--bad)}
+@keyframes pulse{70%{box-shadow:0 0 0 10px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.mwrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);box-shadow:0 1px 3px rgb(20 30 60/.06);border-radius:18px;padding:6px 10px 10px}
+table.grid{width:100%;border-collapse:separate;border-spacing:0 6px;table-layout:fixed;min-width:460px}
+table.grid thead th{position:sticky;top:0;background:var(--panel);z-index:1;padding:10px 6px 8px;text-align:center;vertical-align:bottom;border-bottom:1px solid var(--line)}
+table.grid th.rl{text-align:left;width:26%;font-size:.95rem;font-weight:600;padding:0 8px 0 4px;white-space:nowrap}
+.sname{display:block;font-size:1.05rem;font-weight:800;margin-bottom:4px}
+.badge{display:inline-block;border:1px solid var(--chipline);border-radius:999px;padding:1px 9px;font-size:.74rem;font-weight:600;color:var(--muted);white-space:nowrap}
 .badge.avail{background:var(--ok);border-color:var(--ok);color:var(--ok-fg)}
-.addr{display:block;margin:8px 0 0;font-size:.95rem}
-.phone{display:block;margin:2px 0 8px;font-size:.92rem;color:var(--muted);text-decoration:none}
-.restock{display:inline-block;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:4px 12px;font-size:.8rem;color:var(--muted);margin:0 0 6px}
-.stale{font-size:.8rem;color:var(--warn-fg);background:var(--warn-bg);border-radius:8px;padding:2px 8px;display:inline-block;margin:0 0 6px}
-table.cells{width:100%;border-collapse:separate;border-spacing:6px;table-layout:fixed;margin-top:2px}
-table.cells th{font-size:.78rem;font-weight:700;color:var(--muted);padding:0}
-table.cells th.c0,table.cells td.c0{width:30%}
-table.cells td{padding:0;height:44px}
-table.cells form{margin:0;height:100%}
-.chip{display:block;border:1px solid var(--chipline);border-radius:9px;padding:0 4px;font-size:.82rem;font-weight:600;height:44px;line-height:42px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cell{position:relative;width:100%;height:44px;border-radius:9px;border:1px dashed var(--chipline);background:transparent;color:var(--muted);font:inherit;font-size:.92rem;font-weight:600;cursor:pointer;padding:0}
-.cell:hover{filter:brightness(.96)}
+tr.grp th{text-align:left;font-size:.78rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);padding:12px 4px 0}
+.sw{display:inline-block;width:14px;height:14px;border-radius:50%;border:1px solid var(--chipline);vertical-align:-2px;margin-right:8px}
+table.grid td{padding:0 4px;height:42px}
+table.grid form{margin:0;height:100%}
+.cell{position:relative;width:100%;height:42px;border-radius:10px;border:1px dashed var(--chipline);background:transparent;color:var(--muted);font:inherit;font-size:.86rem;font-weight:600;cursor:pointer;padding:0 4px;white-space:nowrap}
+.cell{transition:transform .08s,filter .15s}.cell:hover{filter:brightness(.96);transform:translateY(-1px)}
 .cell:focus-visible,.pill-btn:focus-visible,nav.tabs a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.cell.watch{background:var(--notify-bg);border:1px solid transparent;color:var(--notify-fg)}
-.cell.watch small{font-size:.7rem;margin-right:2px}
-.cell.in{background:var(--ok);border:1px solid transparent;color:var(--ok-fg);font-size:1.45rem;line-height:1}
-.cell .bell{position:absolute;top:1px;right:3px;font-size:.62rem;line-height:1}
+.cell.watch{background:var(--notify-bg);border:1px solid transparent;color:var(--notify-fg);font-weight:600}
+.cell.in{background:var(--ok);border:1px solid transparent;color:var(--ok-fg);font-weight:800;box-shadow:0 2px 10px rgb(31 157 85/.35)}
+.cell .bell{position:absolute;top:2px;right:4px;font-size:.6rem;line-height:1}
+.legend{display:flex;margin-bottom:22px!important;gap:6px 18px;flex-wrap:wrap;font-size:.82rem;color:var(--muted);margin:12px 4px 0}
+.k{display:inline-block;border-radius:6px;padding:1px 8px;margin-right:4px;border:1px dashed var(--chipline);font-weight:700}
+.k.in{background:var(--ok);color:var(--ok-fg);border-color:transparent}
+.k.watch{background:var(--notify-bg);color:var(--notify-fg);border-color:transparent}
+.sinfos{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.sinfo{box-shadow:0 1px 3px rgb(20 30 60/.06);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.sinfo h3{margin:0 0 6px;font-size:1.05rem}
+.addr{display:block;font-size:.9rem;color:var(--muted);text-decoration:none}
+.phone{display:block;margin:2px 0 10px;font-size:.9rem;color:var(--muted);text-decoration:none}
+.addr:hover,.phone:hover{color:var(--accent)}
+.restock{display:inline-block;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:4px 12px;font-size:.78rem;color:var(--muted);margin:0 0 4px}
+.stale{font-size:.8rem;color:var(--warn-fg);background:var(--warn-bg);border-radius:8px;padding:2px 8px;display:inline-block;margin:0 0 4px}
+.cell .ic{display:none}
+@media(max-width:560px){.hero p{font-size:1.05rem}table.grid{min-width:0}table.grid th.rl{font-size:.85rem;width:30%}.cell .t{display:none}.cell .ic{display:inline;font-size:1.2rem}.cell{font-size:1.05rem}.sname{font-size:.9rem}.badge{display:block;width:fit-content;margin:0 auto;font-size:.62rem;padding:1px 6px;white-space:normal;line-height:1.2}.mwrap{padding:4px 6px 8px}table.grid td{padding:0 2px}}
 .foot{color:var(--muted);font-size:.85rem;margin-top:22px}
 h2.sec{font-size:1.15rem;margin:6px 0 4px;color:var(--fg)}
 p.sub{color:var(--muted);margin:0 0 14px;font-size:.95rem;max-width:70ch}
-.hist{background:var(--panel);border-radius:14px;padding:10px 14px;margin:0;list-style:none}
-.hist li{display:flex;align-items:center;gap:10px;padding:6px 0;flex-wrap:wrap}
+.hist{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:6px 14px;margin:0;list-style:none}
+.hist li{display:flex;align-items:center;gap:10px;padding:9px 0;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.hist li:last-child{border-bottom:0}
 .hist time{color:var(--muted);font-size:.92rem;min-width:5.6em;font-variant-numeric:tabular-nums}
 .tag{display:inline-block;border-radius:999px;padding:1px 10px;font-size:.74rem;font-weight:800;letter-spacing:.06em}
 .tag.in_stock{background:var(--ok-bg);color:var(--ok-text)}
@@ -310,7 +321,7 @@ table.matrix tr.tr th{color:var(--fg)}
 .axis.days{gap:8px;font-size:.9rem}
 .axis span{flex:1 1 0;min-width:0;white-space:nowrap}
 .axis.days span{text-align:center}
-.card{background:var(--panel);border-radius:16px;padding:16px;margin-bottom:16px;max-width:760px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:16px;max-width:760px}
 .card h2{margin:0 0 6px;font-size:1.1rem}
 .card p{margin:6px 0}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -327,7 +338,74 @@ dl.kv dt{color:var(--muted)}dl.kv dd{margin:0}
 `;
 
 const JS =
-  `document.querySelectorAll('form.filters select').forEach(function(s){s.addEventListener('change',function(){s.form.submit()})});`;
+  `document.querySelectorAll('form.filters select').forEach(function(s){s.addEventListener('change',function(){s.form.submit()})});
+(function(){
+  var button=document.getElementById("enable-notifications");
+  var message=document.getElementById("notification-status");
+  var main=document.querySelector("main");
+  var lastRunAt=main.dataset.lastRun||"";
+  try { lastRunAt=localStorage.getItem("lastRunAt")||lastRunAt; } catch {}
+  if (!("Notification" in window)) {
+    if(message)message.textContent="Notifications are unavailable in this browser.";
+    if(button)button.disabled=true;
+    return;
+  }
+  function showPermission(){
+    if(!message)return;
+    message.textContent=Notification.permission==="granted"
+      ?"Browser notifications are enabled."
+      :Notification.permission==="denied"
+      ?"Notifications are blocked in browser settings."
+      :"Enable notifications to get alerts while this page is open.";
+  }
+  if(button){
+    button.addEventListener("click",async function(){
+      try{
+        await Notification.requestPermission();
+        showPermission();
+      }catch{
+        message.textContent="Unable to request notification permission.";
+      }
+    });
+    showPermission();
+  }
+  var test=document.getElementById("test-stock-alert");
+  if(test){
+    test.addEventListener("click",async function(){
+      try{
+        if(Notification.permission!=="granted")await Notification.requestPermission();
+        if(Notification.permission!=="granted"){showPermission();return;}
+        new Notification("iPhone Duo in stock (test)",{body:"512GB Star White available at Brisbane. This is a test alert."});
+        message.textContent="Test alert sent.";
+      }catch{
+        message.textContent="Unable to send test alert.";
+      }
+    });
+  }
+  async function poll(){
+    try{
+      var response=await fetch("/api/status",{cache:"no-store"});
+      if(!response.ok)throw new Error("Status request failed");
+      var data=await response.json();
+      var run=data.lastRun;
+      if(!run)return;
+      try{
+        var storedRunAt=localStorage.getItem("lastRunAt");
+        if(storedRunAt&&run.at<=storedRunAt){lastRunAt=storedRunAt;return;}
+      }catch{}
+      if(run.at===lastRunAt)return;
+      lastRunAt=run.at;
+      try{localStorage.setItem("lastRunAt",lastRunAt);}catch{}
+      if(run.ok&&data.notification&&Notification.permission==="granted"){
+        new Notification(data.notification.title,{body:data.notification.body});
+      }
+    }catch{
+      if(message)message.textContent="Unable to check for new notifications.";
+    }
+  }
+  poll();
+  window.setInterval(poll,15000);
+})();`;
 
 // ------------------------------------------------------------ rendering ----
 
@@ -340,7 +418,6 @@ interface PageData {
   snapshot: StockSnapshot | null;
   history: HistoryEntry[];
   restocks: RestockEvent[];
-  ntfy: NtfyConfig | null;
 }
 
 function storeName(id: string): string {
@@ -372,7 +449,7 @@ function renderHeader(d: PageData): string {
       esc(label)
     }</a>`
   ).join("");
-  return `<header class="top"><div><p class="eyebrow">RESULTS · 🇨🇦 CANADA</p><h1>${
+  return `<header class="top"><div><p class="eyebrow">RESULTS · 🇦🇺 AUSTRALIA</p><h1>${
     esc(PRODUCTS[0].name)
   }</h1></div><div class="checked">${esc(checked)}</div></header>
 <nav class="tabs" aria-label="Sections">${tabs}</nav>`;
@@ -385,19 +462,12 @@ function renderNotes(d: PageData): string {
     out.push(`<p class="note err" role="alert">${esc(u.get("error"))}</p>`);
   } else if (u.has("saved")) {
     out.push(`<p class="note ok">Settings saved.</p>`);
-  } else if (u.has("tested")) {
-    out.push(`<p class="note ok">Test notification sent.</p>`);
   } else if (u.has("ran")) {
     out.push(`<p class="note ok">Check completed.</p>`);
   }
   if (!d.settings.enabled) {
     out.push(
       `<p class="note">Alerts are turned off. <a href="/?tab=settings">Turn them on</a> to get notified.</p>`,
-    );
-  }
-  if (!d.ntfy) {
-    out.push(
-      `<p class="note">ntfy is not configured. Set NTFY_TOPIC to receive alerts.</p>`,
     );
   }
   if (d.lastRun && !d.lastRun.ok) {
@@ -427,16 +497,76 @@ function restockPill(d: PageData, storeId: string): string {
   } this week</div>`;
 }
 
-function renderStoreCard(d: PageData, storeId: string): string {
+function renderCell(
+  st: { id: string },
+  sku: { part: string },
+  d: PageData,
+  watch: Set<string>,
+): string {
+  const watched = watch.has(pairKey(st.id, sku.part));
+  const ps = d.snapshot?.stores[st.id]?.parts[sku.part];
+  const label = shortLabel(sku.part);
+  let btn: string;
+  if (ps?.available) {
+    const q = ps.quote ? ` — ${ps.quote}` : "";
+    btn =
+      `<button class="cell in" type="submit" aria-pressed="${watched}" aria-label="${
+        esc(`In stock${q}. ${label}. ${watched ? "Watching" : "Not watching"}`)
+      }" title="${esc(`In stock${q}`)}">✓<span class="t"> In stock</span>${
+        watched ? `<span class="bell" aria-hidden="true">🔔</span>` : ""
+      }</button>`;
+  } else if (watched) {
+    btn =
+      `<button class="cell watch" type="submit" aria-pressed="true" aria-label="${
+        esc(`Alert on: ${label}`)
+      }" title="Watching — click to stop">🔔<span class="t"> Watching</span></button>`;
+  } else {
+    btn =
+      `<button class="cell" type="submit" aria-pressed="false" aria-label="${
+        esc(`Alert off: ${label}`)
+      }" title="Not watching — click to get alerted"><span class="t">Watch</span><span class="ic">+</span></button>`;
+  }
+  return `<td><form method="post" action="/toggle"><input type="hidden" name="store" value="${
+    esc(st.id)
+  }"><input type="hidden" name="part" value="${
+    esc(sku.part)
+  }">${btn}</form></td>`;
+}
+
+function renderMatrixTable(d: PageData): string {
+  const watch = new Set(d.settings.watch);
+  const head = STORES.map((st) => {
+    const n = availableCount(d.snapshot, st.id);
+    const badge = n > 0
+      ? `<span class="badge avail">${n} option${
+        n === 1 ? "" : "s"
+      } available</span>`
+      : `<span class="badge">None available</span>`;
+    return `<th scope="col" id="${esc(st.id)}"><span class="sname">${
+      esc(st.name)
+    }</span>${badge}</th>`;
+  }).join("");
+  const rows = CAPACITIES.map((cap) => {
+    const group = `<tr class="grp"><th scope="colgroup" colspan="${
+      STORES.length + 1
+    }">${esc(cap)}</th></tr>`;
+    const lines = COLORS.map((c) => {
+      const sku = skuFor(c.key, cap);
+      if (!sku) return "";
+      const chip = CHIPS[c.key] ?? FALLBACK_CHIP;
+      const cells = STORES.map((st) => renderCell(st, sku, d, watch)).join("");
+      return `<tr><th scope="row" class="rl"><span class="sw" style="background:${chip.bg}"></span>${
+        esc(c.display)
+      }</th>${cells}</tr>`;
+    }).join("");
+    return group + lines;
+  }).join("");
+  return `<div class="mwrap"><table class="grid"><thead><tr><th class="rl"><span class="sr">Model</span></th>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function renderStoreInfo(d: PageData, storeId: string): string {
   const st = findStore(storeId)!;
   const data = d.snapshot?.stores[st.id];
-  const n = availableCount(d.snapshot, st.id);
-  const badge = n > 0
-    ? `<span class="badge avail">${n} option${
-      n === 1 ? "" : "s"
-    } available</span>`
-    : `<span class="badge">None available</span>`;
-  const watch = new Set(d.settings.watch);
   let note = "";
   if (!data) {
     note = `<div class="stale">Not checked yet</div>`;
@@ -445,59 +575,14 @@ function renderStoreCard(d: PageData, storeId: string): string {
       esc(clock(data.checkedAt))
     }</div>`;
   }
-  const head = CAPACITIES.map((c) => `<th scope="col">${esc(c)}</th>`).join("");
-  const rows = COLORS.map((c) => {
-    const chip = CHIPS[c.key] ?? FALLBACK_CHIP;
-    const cells = CAPACITIES.map((cap) => {
-      const sku = skuFor(c.key, cap);
-      if (!sku) return `<td></td>`;
-      const watched = watch.has(pairKey(st.id, sku.part));
-      const ps = data?.parts[sku.part];
-      const label = shortLabel(sku.part);
-      let btn: string;
-      if (ps?.available) {
-        const q = ps.quote ? ` — ${ps.quote}` : "";
-        btn =
-          `<button class="cell in" type="submit" aria-pressed="${watched}" aria-label="${
-            esc(
-              `In stock${q}. ${label}. ${
-                watched ? "Watching" : "Not watching"
-              }`,
-            )
-          }" title="${esc(`In stock${q}`)}">✓${
-            watched ? `<span class="bell" aria-hidden="true">🔔</span>` : ""
-          }</button>`;
-      } else if (watched) {
-        btn =
-          `<button class="cell watch" type="submit" aria-pressed="true" aria-label="${
-            esc(`Notify on: ${label}`)
-          }" title="Watching — click to stop"><small aria-hidden="true">🔔</small>Notify</button>`;
-      } else {
-        btn =
-          `<button class="cell" type="submit" aria-pressed="false" aria-label="${
-            esc(`Notify off: ${label}`)
-          }" title="Not watching — click to get notified">Notify</button>`;
-      }
-      return `<td><form method="post" action="/toggle"><input type="hidden" name="store" value="${
-        esc(st.id)
-      }"><input type="hidden" name="part" value="${
-        esc(sku.part)
-      }">${btn}</form></td>`;
-    }).join("");
-    return `<tr><th scope="row" class="c0"><span class="chip" style="background:${chip.bg};color:${chip.fg}">${
-      esc(c.display)
-    }</span></th>${cells}</tr>`;
-  }).join("");
-  return `<section class="store" id="${esc(st.id)}"><h2>${esc(st.name)}</h2>
-<div>${badge}</div>
+  return `<article class="sinfo"><h3>${esc(st.name)}</h3>
 <a class="addr" href="${
     esc(mapsUrl(st.name, st.address))
   }" target="_blank" rel="noopener">${esc(st.address)}</a>
 <a class="phone" href="tel:${esc(st.phone.replace(/[^0-9+]/g, ""))}">${
     esc(st.phone)
   }</a>
-${restockPill(d, st.id)}${note}
-<table class="cells"><thead><tr><th class="c0"></th>${head}</tr></thead><tbody>${rows}</tbody></table></section>`;
+${restockPill(d, st.id)}${note}</article>`;
 }
 
 function renderStock(d: PageData): string {
@@ -509,12 +594,17 @@ function renderStock(d: PageData): string {
       n === 1 ? "" : "s"
     } available across ${STORES.length} stores`
     : `Nothing in stock at your ${STORES.length} stores right now`;
-  return `<div class="summary"><p>${summary}</p><a class="pill-btn" href="/?tab=settings">🔔 Set an alert</a></div>
-${renderNotes(d)}
-<div class="stores">${
-    STORES.map((s) => renderStoreCard(d, s.id)).join("")
+  const state = !d.snapshot ? "idle" : n > 0 ? "on" : "off";
+  return `${
+    renderNotes(d)
+  }<section class="hero ${state}"><span class="pulse" aria-hidden="true"></span><p>${summary}</p><form method="post" action="/run" class="runform"><input type="hidden" name="return" value="stock"><button class="pill-btn" type="submit">Check stock now</button></form><a class="ghost-btn" href="/?tab=settings">Alert settings</a></section>
+${renderMatrixTable(d)}
+<p class="legend"><span><b class="k in">In stock</b></span><span><b class="k watch">🔔 Watching</b> you'll be alerted</span><span><b class="k">Watch</b> tap to get alerts</span></p>
+<h2 class="sec">Stores</h2>
+<div class="sinfos">${
+    STORES.map((s) => renderStoreInfo(d, s.id)).join("")
   }</div>
-<p class="foot">Checks run every minute, and alerts repeat every minute while an item is in stock. Tap a cell to turn its Notify on or off.</p>`;
+<p class="foot">Checks run every minute. With browser notifications enabled and this dashboard open, you get an alert when an item newly comes into stock.</p>`;
 }
 
 function renderChanges(d: PageData): string {
@@ -640,7 +730,7 @@ function renderPatterns(d: PageData): string {
   return `${renderNotes(d)}<h2 class="sec">When does stock come in? · ${
     esc(PRODUCTS[0].name)
   }</h2>
-<p class="sub">Restocks logged over the last 7 days at your ${STORES.length} stores, in Toronto time.</p>
+<p class="sub">Restocks logged over the last 7 days at your ${STORES.length} stores, in Brisbane time.</p>
 <form class="filters" method="get" action="/"><input type="hidden" name="tab" value="patterns">${
     selectHtml(
       "store",
@@ -672,7 +762,7 @@ ${renderBars(p.byDay, DAY_NAMES, p.peakDay, true)}
 }
 
 function renderSettings(d: PageData): string {
-  const { settings: s, lastRun: r, ntfy } = d;
+  const { settings: s, lastRun: r } = d;
   const total = STORES.length * ALL_SKUS.length;
   const colourBoxes = COLORS.map((c) =>
     `<label class="chk"><input type="checkbox" name="color" value="${
@@ -693,7 +783,7 @@ function renderSettings(d: PageData): string {
     ? `<p class="muted">No check has run yet.</p>`
     : `<dl class="kv"><dt>Last check</dt><dd>${
       esc(dayClock(r.at))
-    } (Toronto) · ${r.ok ? "OK" : "<strong>Error</strong>"}</dd>${
+    } (Brisbane) · ${r.ok ? "OK" : "<strong>Error</strong>"}</dd>${
       r.error ? `<dt>Error</dt><dd>${esc(r.error)}</dd>` : ""
     }<dt>In stock (watched)</dt><dd>${
       r.hits.length
@@ -716,18 +806,14 @@ function renderSettings(d: PageData): string {
 <p class="muted">Stock is still tracked while alerts are off; only notifications stop.</p>
 <p><button class="btn primary" type="submit">Save</button></p></form>
 <form class="card" method="post" action="/settings"><h2>Bulk watch tool</h2>
-<p class="muted">Pick colours, sizes and stores, then replace, add to or remove from your watch list. This edits the same per-cell Notify toggles on the Stock tab. Currently watching <strong>${s.watch.length}</strong> of ${total} combinations.</p>
+<p class="muted">Pick colours, sizes and stores, then replace, add to or remove from your watch list. This edits the same per-cell alert toggles on the Stock tab. Currently watching <strong>${s.watch.length}</strong> of ${total} combinations.</p>
 <fieldset><legend>Colours</legend>${colourBoxes}</fieldset>
 <fieldset><legend>Sizes</legend>${sizeBoxes}</fieldset>
 <fieldset><legend>Stores</legend>${storeBoxes}</fieldset>
 <div class="row"><button class="btn primary" type="submit" name="mode" value="replace">Replace watch list</button><button class="btn" type="submit" name="mode" value="add">Add</button><button class="btn danger" type="submit" name="mode" value="remove">Remove</button></div></form>
-<section class="card"><h2>Notifications</h2>${
-    ntfy
-      ? `<p>ntfy topic: <strong>${
-        esc(ntfy.topic)
-      }</strong> <span class="muted">(${esc(ntfy.server)})</span></p>`
-      : `<p>ntfy is not configured. Set NTFY_TOPIC to receive alerts.</p>`
-  }<div class="row"><form method="post" action="/test-notify"><input type="hidden" name="return" value="settings"><button class="btn" type="submit">Send test notification</button></form><form method="post" action="/run"><input type="hidden" name="return" value="settings"><button class="btn" type="submit">Run check now</button></form></div></section>
+<section class="card"><h2>Notifications</h2>
+<p>Browser notifications arrive when stock is found while the dashboard is open.</p>
+<div class="row"><button class="btn" id="enable-notifications" type="button">Enable browser notifications</button><button class="btn" id="test-stock-alert" type="button">Test stock alert</button><form method="post" action="/run"><input type="hidden" name="return" value="settings"><button class="btn" type="submit">Run check now</button></form></div><p class="muted" id="notification-status" role="status">Notifications require permission and this dashboard to stay open.</p></section>
 <section class="card"><h2>Last run</h2>${last}</section>`;
 }
 
@@ -739,12 +825,14 @@ export function renderPage(d: PageData): string {
     : d.tab === "patterns"
     ? renderPatterns(d)
     : renderSettings(d);
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+  return `<!doctype html><html lang="en-AU"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">${
     d.tab === "stock" ? `<meta http-equiv="refresh" content="60">` : ""
   }
-<title>iPhone Duo Stock Watcher</title><style>${CSS}</style></head><body><main>
+<title>iPhone Duo Stock Watcher</title><style>${CSS}</style></head><body><main data-last-run="${
+    esc(d.lastRun?.at ?? "")
+  }">
 ${renderHeader(d)}
 ${body}
 </main><script>${JS}</script></body></html>`;
@@ -757,7 +845,6 @@ const ROUTES: Record<string, string[]> = {
   "/api/status": ["GET", "HEAD"],
   "/settings": ["POST"],
   "/toggle": ["POST"],
-  "/test-notify": ["POST"],
   "/run": ["POST"],
 };
 
@@ -804,7 +891,6 @@ export function createHandler(
       return text("Cross-origin request rejected", 403);
     }
 
-    const ntfy = deps.ntfy === undefined ? ntfyConfigFromEnv() : deps.ntfy;
     const now = deps.now?.() ?? new Date();
 
     switch (url.pathname) {
@@ -826,7 +912,6 @@ export function createHandler(
           snapshot,
           history,
           restocks,
-          ntfy,
         });
         return new Response(html, {
           headers: {
@@ -841,12 +926,21 @@ export function createHandler(
           getLastRun(kv),
           getSnapshot(kv),
         ]);
-        return new Response(JSON.stringify({ settings, lastRun, snapshot }), {
-          headers: {
-            "Content-Type": "application/json; charset=utf-8",
-            ...BASE_HEADERS,
+        const alertHits = lastRun?.ok
+          ? (lastRun.newHits ?? []).filter((h) =>
+            lastRun.storesChecked.includes(h.storeId)
+          )
+          : [];
+        const notification = buildAlert(alertHits);
+        return new Response(
+          JSON.stringify({ settings, lastRun, snapshot, notification }),
+          {
+            headers: {
+              "Content-Type": "application/json; charset=utf-8",
+              ...BASE_HEADERS,
+            },
           },
-        });
+        );
       }
     }
 
@@ -882,35 +976,6 @@ export function createHandler(
           : settings.enabled;
         await saveSettings(kv, sanitizeSettings({ enabled, watch }));
         return redirect("tab=settings&saved=1");
-      }
-      case "/test-notify": {
-        if (!ntfy) {
-          return redirect(
-            `${back}&error=` +
-              encodeURIComponent("ntfy is not configured (NTFY_TOPIC)"),
-          );
-        }
-        try {
-          await sendNtfy(
-            ntfy,
-            {
-              title: "iPhone Duo Stock Watcher",
-              body: "Test notification: alerts are working.",
-              priority: 3,
-              tags: ["white_check_mark"],
-            },
-            deps.fetchFn ?? ((...a) => fetch(...a)),
-          );
-          return redirect(`${back}&tested=1`);
-        } catch (e) {
-          return redirect(
-            `${back}&error=` + encodeURIComponent(
-              `Test notification failed: ${
-                e instanceof Error ? e.message : String(e)
-              }`,
-            ),
-          );
-        }
       }
       case "/run": {
         if (!deps.runCheck) {

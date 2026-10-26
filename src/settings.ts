@@ -4,7 +4,7 @@ import { ALL_SKUS, STORES } from "./catalog.ts";
 
 export interface Settings {
   enabled: boolean;
-  /** Watched store/model pairs, as pair keys ("R121|MK244VC/A"). */
+  /** Watched store/model pairs, as pair keys ("R466|MK2D4X/A"). */
   watch: string[];
 }
 
@@ -42,9 +42,10 @@ export interface RunStatus {
   ok: boolean;
   error?: string;
   hits: Hit[];
+  /** Hits that were not already in stock on the previous run. */
+  newHits?: Hit[];
   storesChecked: string[];
   storesMissing: string[];
-  notified: boolean;
   consecutiveFailures: number;
 }
 
@@ -85,7 +86,17 @@ export function sanitizeSettings(input: unknown): Settings {
 export async function getSettings(kv: Deno.Kv): Promise<Settings> {
   const entry = await kv.get(["settings"]);
   if (entry.value === null) return sanitizeSettings(undefined);
-  return sanitizeSettings(entry.value);
+  const settings = sanitizeSettings(entry.value);
+  const storedWatch = (entry.value as { watch?: unknown } | null)?.watch;
+  if (
+    settings.watch.length === 0 && Array.isArray(storedWatch) &&
+    storedWatch.length > 0
+  ) {
+    const migrated = { ...settings, watch: [...DEFAULT_SETTINGS.watch] };
+    await kv.set(["settings"], migrated);
+    return migrated;
+  }
+  return settings;
 }
 
 export async function saveSettings(kv: Deno.Kv, s: Settings): Promise<void> {

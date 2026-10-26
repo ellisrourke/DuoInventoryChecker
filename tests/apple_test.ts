@@ -23,11 +23,11 @@ const json = (body: unknown, status = 200) =>
   });
 
 Deno.test("buildPickupUrl: params, encoding and order", () => {
-  const url = buildPickupUrl("R121", ["MK244VC/A", "MK254VC/A"], true);
+  const url = buildPickupUrl("R121", ["MK2D4X/A", "MK2E4X/A"], true);
   assertEquals(
     url,
-    "https://www.apple.com/ca/shop/retail/pickup-message?fae=true&store=R121&searchNearby=true&little=false" +
-      "&parts.0=MK244VC%2FA&parts.1=MK254VC%2FA&mts.0=regular&mts.1=sticky&fts=true",
+    "https://www.apple.com/au/shop/retail/pickup-message?fae=true&store=R121&searchNearby=true&little=false" +
+      "&parts.0=MK2D4X%2FA&parts.1=MK2E4X%2FA&mts.0=regular&mts.1=sticky&fts=true",
   );
   assert(buildPickupUrl("R121", [], false).includes("searchNearby=false"));
 });
@@ -39,11 +39,11 @@ Deno.test("parsePickupResponse: content.pickupMessage shape", () => {
   assertEquals(eaton.storeName, "Eaton Centre");
   assertEquals(eaton.city, "Toronto");
   assertEquals(Object.keys(eaton.parts).length, 8);
-  assertEquals(eaton.parts["MK264VC/A"], {
+  assertEquals(eaton.parts["MK2F4X/A"], {
     pickupDisplay: "available",
     quote: "Today at Eaton Centre",
   });
-  assertEquals(eaton.parts["MK244VC/A"].pickupDisplay, "unavailable");
+  assertEquals(eaton.parts["MK2D4X/A"].pickupDisplay, "unavailable");
 });
 
 Deno.test("parsePickupResponse: body.stores shape and quote fallback", () => {
@@ -172,13 +172,13 @@ export function mockApple(requested: string[] = []): typeof fetch {
                 storeName: "Conestoga",
                 city: "Waterloo",
                 partsAvailability: {
-                  "MK244VC/A": {
-                    partNumber: "MK244VC/A",
+                  "MK2D4X/A": {
+                    partNumber: "MK2D4X/A",
                     pickupDisplay: "available",
                     pickupSearchQuote: "Available Today",
                   },
-                  "MK254VC/A": {
-                    partNumber: "MK254VC/A",
+                  "MK2E4X/A": {
+                    partNumber: "MK2E4X/A",
                     pickupDisplay: "unavailable",
                   },
                 },
@@ -202,30 +202,30 @@ Deno.test("fetchAllStock: follow-up request anchored at missing R464", async () 
   assertEquals(r.storesChecked, ["R121", "R350", "R464"]);
   assertEquals(r.storesMissing, []);
   assertEquals(Object.keys(r.stores), ["R121", "R350", "R464"]);
-  assertEquals(r.stores["R121"]["MK264VC/A"], {
+  assertEquals(r.stores["R121"]["MK2F4X/A"], {
     available: true,
     quote: "Today at Eaton Centre",
   });
-  assertEquals(r.stores["R121"]["MK244VC/A"].available, false);
-  assertEquals(r.stores["R350"]["MK294VC/A"].available, true);
-  assertEquals(r.stores["R350"]["MK2C4VC/A"].available, true);
-  assertEquals(r.stores["R464"]["MK244VC/A"], {
+  assertEquals(r.stores["R121"]["MK2D4X/A"].available, false);
+  assertEquals(r.stores["R350"]["MK2J4X/A"].available, true);
+  assertEquals(r.stores["R350"]["MK2L4X/A"].available, true);
+  assertEquals(r.stores["R464"]["MK2D4X/A"], {
     available: true,
     quote: "Available Today",
   });
-  assertEquals(r.stores["R464"]["MK254VC/A"].available, false);
+  assertEquals(r.stores["R464"]["MK2E4X/A"].available, false);
 });
 
 Deno.test("fetchAllStock: only requested parts are returned", async () => {
   const requested: string[] = [];
-  const r = await fetchAllStock(["R350"], ["MK2C4VC/A"], {
+  const r = await fetchAllStock(["R350"], ["MK2L4X/A"], {
     fetchFn: mockApple(requested),
     sleep: noSleep,
   });
   assertEquals(requested, ["R350"]);
   assertEquals(r.storesChecked, ["R350"]);
-  assertEquals(Object.keys(r.stores["R350"]), ["MK2C4VC/A"]);
-  assertEquals(r.stores["R350"]["MK2C4VC/A"].available, true);
+  assertEquals(Object.keys(r.stores["R350"]), ["MK2L4X/A"]);
+  assertEquals(r.stores["R350"]["MK2L4X/A"].available, true);
 });
 
 Deno.test("fetchAllStock: unreachable follow-up leaves store missing; no stores means no request", async () => {

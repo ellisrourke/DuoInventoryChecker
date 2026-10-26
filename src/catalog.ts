@@ -1,4 +1,4 @@
-// Static catalog: the products/SKUs we watch and the GTA-area Apple Stores.
+// Static catalog: the products/SKUs we watch and the Queensland Apple Stores.
 
 export interface Sku {
   part: string;
@@ -26,52 +26,52 @@ export const PRODUCTS: Product[] = [
   {
     id: "iphone-duo",
     name: "iPhone Duo",
-    shopUrl: "https://www.apple.com/ca/shop/buy-iphone/iphone-duo",
+    shopUrl: "https://www.apple.com/au/shop/buy-iphone/iphone-duo",
     skus: [
       {
-        part: "MK244VC/A",
+        part: "MK2D4X/A",
         capacity: "256GB",
         colorKey: "starwhite",
         colorDisplay: "Star White",
       },
       {
-        part: "MK254VC/A",
+        part: "MK2E4X/A",
         capacity: "256GB",
         colorKey: "nightsky",
         colorDisplay: "Night Sky",
       },
       {
-        part: "MK264VC/A",
+        part: "MK2F4X/A",
         capacity: "512GB",
         colorKey: "starwhite",
         colorDisplay: "Star White",
       },
       {
-        part: "MK274VC/A",
+        part: "MK2G4X/A",
         capacity: "512GB",
         colorKey: "nightsky",
         colorDisplay: "Night Sky",
       },
       {
-        part: "MK284VC/A",
+        part: "MK2H4X/A",
         capacity: "1TB",
         colorKey: "starwhite",
         colorDisplay: "Star White",
       },
       {
-        part: "MK294VC/A",
+        part: "MK2J4X/A",
         capacity: "1TB",
         colorKey: "nightsky",
         colorDisplay: "Night Sky",
       },
       {
-        part: "MK2A4VC/A",
+        part: "MK2K4X/A",
         capacity: "2TB",
         colorKey: "starwhite",
         colorDisplay: "Star White",
       },
       {
-        part: "MK2C4VC/A",
+        part: "MK2L4X/A",
         capacity: "2TB",
         colorKey: "nightsky",
         colorDisplay: "Night Sky",
@@ -82,74 +82,25 @@ export const PRODUCTS: Product[] = [
 
 export const STORES: Store[] = [
   {
-    id: "R121",
-    name: "Eaton Centre",
-    city: "Toronto",
-    address: "220 Yonge Street, Toronto, M5B 2H1",
-    phone: "647-258-0801",
+    id: "R466",
+    name: "Brisbane",
+    city: "Brisbane City",
+    address: "MacArthur Chambers, 233 Queen Street, Brisbane City, QLD 4000",
+    phone: "07-31829000",
   },
   {
-    id: "R120",
-    name: "Yorkdale",
-    city: "Toronto",
-    address: "3401 Dufferin Street, Toronto, M6A 3A1",
-    phone: "416-785-1776",
+    id: "R509",
+    name: "Carindale",
+    city: "Carindale",
+    address: "Westfield Carindale, 1151 Creek Road, Carindale, QLD 4152",
+    phone: "07-3199 2200",
   },
   {
-    id: "R208",
-    name: "Sherway Gardens",
-    city: "Toronto",
-    address: "25 The West Mall, Toronto, M9C 1B8",
-    phone: "416-646-8489",
-  },
-  {
-    id: "R333",
-    name: "Fairview",
-    city: "Toronto",
-    address: "1800 Sheppard Avenue East, Toronto, M2J 5A7",
-    phone: "416-646-4412",
-  },
-  {
-    id: "R350",
-    name: "Square One",
-    city: "Mississauga",
-    address: "100 City Centre Drive, Mississauga, L5B 2C9",
-    phone: "905-366-0580",
-  },
-  {
-    id: "R515",
-    name: "Markville",
-    city: "Markham",
-    address: "5000 Highway 7 East, Markham, L3R 4M9",
-    phone: "905-513-2860",
-  },
-  {
-    id: "R429",
-    name: "Upper Canada Mall",
-    city: "Newmarket",
-    address: "17600 Yonge Street, Newmarket, L3Y 4Z1",
-    phone: "905-952-3400",
-  },
-  {
-    id: "R447",
-    name: "Mapleview Centre",
-    city: "Burlington",
-    address: "900 Maple Avenue, Burlington, L7S 2J8",
-    phone: "289-288-2012",
-  },
-  {
-    id: "R464",
-    name: "Conestoga",
-    city: "Waterloo",
-    address: "550 King Street North, Waterloo, N2L 5W6",
-    phone: "519-772-5150",
-  },
-  {
-    id: "R489",
-    name: "Masonville",
-    city: "London",
-    address: "1680 Richmond Street North, London, N6G 3Y9",
-    phone: "519-963-4060",
+    id: "R351",
+    name: "Robina",
+    city: "Robina",
+    address: "Robina Town Centre, Robina, QLD 4226",
+    phone: "07-5667 0400",
   },
 ];
 

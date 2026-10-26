@@ -2,7 +2,7 @@
 // serves the password-protected settings page.
 
 import { runCheck } from "./src/checker.ts";
-import type { RunStatus } from "./src/settings.ts";
+import { getLastRun, type RunStatus } from "./src/settings.ts";
 import { createHandler } from "./src/web.ts";
 
 const kv = await Deno.openKv();
@@ -16,7 +16,15 @@ function runOnce(): Promise<RunStatus> {
   return inFlight;
 }
 
+// After Apple blocks us (541), pause scheduled checks so the block can clear.
+const BLOCK_COOLDOWN_MS = 10 * 60_000;
+
 Deno.cron("iphone-duo-stock-check", "* * * * *", async () => {
+  const last = await getLastRun(kv);
+  if (
+    last && !last.ok && last.error?.includes("(541)") &&
+    Date.now() - Date.parse(last.at) < BLOCK_COOLDOWN_MS
+  ) return;
   await runOnce();
 });
 

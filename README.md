@@ -1,100 +1,117 @@
-# iPhone Duo GTA Stock Watcher
+# iPhone Duo Brisbane Stock Watcher
 
 A [Deno Deploy](https://deno.com/deploy) app that checks Apple Store pickup
-availability for the **iPhone Duo** at Greater Toronto Area stores **every
-minute** and sends a push notification through [ntfy](https://ntfy.sh) whenever
-a model you've selected is in stock.
+availability for the **iPhone Duo** at Queensland Apple Stores **every minute**
+and sends browser and Discord (iPhone) alerts when a model you've selected newly
+comes into stock.
 
 Based on the approach used by
 [worthbak/apple-store-inventory-checker](https://github.com/worthbak/apple-store-inventory-checker)
 and
 [worthbak/inventory-checker-app](https://github.com/worthbak/inventory-checker-app)
-(Apple's `shop/retail/pickup-message` endpoint, Canadian part numbers from the
+(Apple's `shop/retail/pickup-message` endpoint, Australian part numbers from the
 app's `iPhone-Duo-intl.json` catalog).
 
 ## What it watches
 
 | Storage | Star White | Night Sky |
 | ------- | ---------- | --------- |
-| 256GB   | MK244VC/A  | MK254VC/A |
-| 512GB   | MK264VC/A  | MK274VC/A |
-| 1TB     | MK284VC/A  | MK294VC/A |
-| 2TB     | MK2A4VC/A  | MK2C4VC/A |
+| 256GB   | MK2D4X/A   | MK2E4X/A  |
+| 512GB   | MK2F4X/A   | MK2G4X/A  |
+| 1TB     | MK2H4X/A   | MK2J4X/A  |
+| 2TB     | MK2K4X/A   | MK2L4X/A  |
 
-Stores: Eaton Centre (R121), Yorkdale (R120), Sherway Gardens (R208), Fairview
-(R333), Square One (R350), Markville (R515), Upper Canada Mall (R429), Mapleview
-Centre (R447), Conestoga (R464), Masonville (R489).
+Stores: Brisbane (R466), Carindale (R509), Robina (R351).
 
-Every check fetches all 10 stores × 8 models so the dashboard stays live; you
-choose which store/model combinations send alerts.
+Every check fetches all 3 stores × 8 models so the dashboard stays live; you
+choose which store/model combinations send alerts. The part numbers for 256GB
+and 512GB Star White were confirmed against Apple; the rest follow the same
+sequence and should be double-checked.
 
 ## The dashboard
 
-- **Stock**: a card per store with a colour × storage grid. A green ✓ means it's
-  available for pickup now. Tap any cell to turn its **Notify** alert on (amber
-  🔔) or off (dashed). Each card also shows the last restock, the usual restock
-  hour, and how many restocks happened this week.
+- **Stock**: a status banner (with **Check stock now** and alert settings), then
+  one grid with colour/storage as rows and the three stores as columns. Cells
+  are green **✓ In stock**, blue **🔔 Watching** (you'll be alerted), or dashed
+  **Watch** (tap to start watching). Tap any cell to toggle its alert. Below the
+  grid, each store lists its address, phone, last restock and usual restock
+  hour. Light and dark themes follow your system, and phones show compact icon
+  cells.
 - **Recent changes**: your notification history for the last 7 days. It logs
   when a watched combination came into stock or sold out, plus any
   checker-failure warnings.
-- **Patterns**: when restocks happen at these 10 stores over the last 7 days,
-  broken down by colour and size, hour of day, and day of week (Toronto time),
+- **Patterns**: when restocks happen at these 3 stores over the last 7 days,
+  broken down by colour and size, hour of day, and day of week (Brisbane time),
   with store, colour and size filters.
 - **Settings**: the master alerts switch, a bulk tool to watch or unwatch many
-  combinations at once, a test notification, and "Run check now".
+  combinations at once, browser notification permission, a "Test stock alert"
+  button, and "Run check now".
 
 ## How it behaves
 
 - Runs every minute via `Deno.cron`. Each run makes one request anchored at
-  Eaton Centre (with nearby stores included), plus one follow-up request for
-  each store that wasn't in the first response, such as Conestoga and
-  Masonville.
-- While any watched combination is available, you get **one push per minute**
-  summarising every hit. Tapping it opens the Apple Store page.
-- After 10 failures in a row (e.g. Apple's bot detection, HTTP 541), you get a
-  single warning push. The counter resets on the next success.
+  Brisbane (with nearby stores included), plus one follow-up request for each
+  store that wasn't in the first response.
+- Alerts fire only when a watched item **newly** comes into stock, not on every
+  check while it stays in stock. If it sells out and returns, you're alerted
+  again.
+- Browser notifications need permission and the dashboard tab to remain open.
+  The page checks for updates every 15 seconds. Use HTTPS (or localhost for
+  local development); browser notification permissions require a secure context.
+- If `DISCORD_WEBHOOK_URL` is set, the server also posts to Discord on each new
+  in-stock item, with or without the dashboard open.
+- If Apple blocks requests (HTTP 541), scheduled checks pause for 10 minutes so
+  the block can clear; a manual "Check stock now" still works. After 10 failures
+  in a row, a warning is recorded in history and the counter resets on the next
+  success.
 
 ## Setup
 
-1. **Phone:** install the ntfy app (iOS/Android) and subscribe to a topic with a
-   long, hard-to-guess name, e.g. `duo-gta-7f3k9q2x`. Anyone who knows the topic
-   name can read it, so treat it like a password.
-2. **Deno Deploy** ([console.deno.com](https://console.deno.com)): create a new
+1. **Deno Deploy** ([console.deno.com](https://console.deno.com)): create a new
    app from this GitHub repo with entrypoint `main.ts`. Then, under
    **Databases**, choose **Provision Database** → **Deno KV** and **Assign** it
    to the app. The settings page and alert state are stored there.
-3. **Environment variables** (project settings):
+2. **Environment variables** (project settings):
 
-   | Variable         | Required | Purpose                                          |
-   | ---------------- | -------- | ------------------------------------------------ |
-   | `NTFY_TOPIC`     | yes      | Your ntfy topic name                             |
-   | `ADMIN_PASSWORD` | yes      | Password for the settings page (any username)    |
-   | `NTFY_SERVER`    | no       | Self-hosted ntfy URL (default `https://ntfy.sh`) |
-   | `NTFY_TOKEN`     | no       | Access token if your ntfy topic is protected     |
+   | Variable              | Required | Purpose                                                                                                              |
+   | --------------------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
+   | `ADMIN_PASSWORD`      | yes      | Password for the settings page (any username)                                                                        |
+   | `DISCORD_WEBHOOK_URL` | no       | Discord webhook URL. Posts to a channel when an item newly comes into stock; the Discord iPhone app pushes it to you |
 
-4. Open the deployment URL, log in, pick your models/stores, and press **Send
-   test notification** to confirm the push arrives. The cron job shows up under
-   the project's **Cron** tab.
+3. Open the deployment URL in the browser, log in, allow notifications in
+   **Settings**, and pick the models/stores to watch. Keep the dashboard open to
+   receive browser alerts, or set up Discord (below) for phone alerts. The cron
+   job shows up under the project's **Cron** tab.
 
 ## Local development
 
 ```sh
-NTFY_TOPIC=your-topic ADMIN_PASSWORD=secret deno task dev   # http://localhost:8000
+ADMIN_PASSWORD=secret deno task dev   # http://localhost:8000
 deno task test
 deno task check
 ```
 
 ## Endpoints
 
-- `GET /`: settings and status page (Basic auth)
-- `POST /settings`, `POST /test-notify`, `POST /run`: form actions (Basic auth)
+- `GET /`: dashboard (Basic auth)
+- `POST /settings`, `POST /toggle`, `POST /run`: form actions (Basic auth)
 - `GET /api/status`: JSON settings plus the last run (Basic auth)
 - `GET /health`: public liveness check
 
 ## Caveats
 
 - Apple's endpoint is unofficial and may change or rate-limit. Polling every
-  minute from a Deno Deploy IP could trigger bot detection (HTTP 541). The app
-  retries twice per request and warns you if it keeps failing.
+  minute can trigger bot detection (HTTP 541). The app retries twice per request
+  and pauses after a block. If it keeps happening, lower the frequency by
+  editing the cron schedule in `main.ts` (e.g. `*/3 * * * *`).
 - Part numbers come from a scraped catalog (October 2026). If Apple changes
   them, update `src/catalog.ts`.
+
+## iPhone alerts via Discord
+
+1. In Discord, open a channel's **Edit Channel → Integrations → Webhooks → New
+   Webhook** and copy the URL.
+2. Set it as `DISCORD_WEBHOOK_URL` (Deno Deploy env vars, or
+   `DISCORD_WEBHOOK_URL=... deno task start`).
+3. Install Discord on your iPhone, join that server, and keep notifications on
+   for the channel.

@@ -21,12 +21,12 @@ export class AppleError extends Error {
   }
 }
 
-const ENDPOINT = "https://www.apple.com/ca/shop/retail/pickup-message";
+const ENDPOINT = "https://www.apple.com/au/shop/retail/pickup-message";
 const HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Accept": "application/json",
-  "Accept-Language": "en-CA,en;q=0.9",
+  "Accept-Language": "en-AU,en;q=0.9",
 };
 const MAX_RETRIES = 2;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -57,7 +57,8 @@ export function parsePickupResponse(json: unknown): StoreAvailability[] {
   if (typeof body !== "object" || body === null) {
     throw new AppleError("Unexpected response: missing body");
   }
-  const stores: Json = body.stores ?? body.content?.pickupMessage?.stores;
+  const stores: Json = body.stores ?? body.PickupMessage?.stores ??
+    body.content?.pickupMessage?.stores;
   if (!Array.isArray(stores)) {
     const keys = body.content?.pickupMessage?.errorMessageKeys;
     const detail = Array.isArray(keys) && keys.length

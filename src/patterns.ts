@@ -48,7 +48,7 @@ function argmax(values: number[]): number | null {
 export function computePatterns(
   events: RestockEvent[],
   filter: PatternFilter = {},
-  timeZone = "America/Toronto",
+  timeZone = "Australia/Brisbane",
 ): Patterns {
   const fmt = new Intl.DateTimeFormat("en-US", {
     timeZone,

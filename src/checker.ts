@@ -1,7 +1,8 @@
 // One stock-check run: fetch every store, update the snapshot and history,
-// notify about watched pairs, record status.
+// record watched hits and run status for the browser client.
 
 import { fetchAllStock, type FetchFn } from "./apple.ts";
+import { buildAlert, sendDiscord } from "./alert.ts";
 import { ALL_SKUS, findStore, PRODUCTS, STORES } from "./catalog.ts";
 import {
   appendHistory,
@@ -9,12 +10,6 @@ import {
   type HistoryEntry,
   type RestockEvent,
 } from "./history.ts";
-import {
-  formatHitsMessage,
-  type NtfyConfig,
-  ntfyConfigFromEnv,
-  sendNtfy,
-} from "./notify.ts";
 import {
   getLastRun,
   getSettings,
@@ -37,7 +32,6 @@ const FAILURE_WARNING_THRESHOLD = 10;
 export interface CheckerDeps {
   fetchFn?: FetchFn;
   sleep?: (ms: number) => Promise<void>;
-  ntfy?: NtfyConfig | null;
   now?: () => Date;
 }
 
@@ -46,7 +40,6 @@ export async function runCheck(
   kv: Deno.Kv,
   deps: CheckerDeps = {},
 ): Promise<RunStatus> {
-  const ntfy = deps.ntfy === undefined ? ntfyConfigFromEnv() : deps.ntfy;
   const at = (deps.now?.() ?? new Date()).toISOString();
   const status: RunStatus = {
     at,
@@ -54,7 +47,6 @@ export async function runCheck(
     hits: [],
     storesChecked: [],
     storesMissing: [],
-    notified: false,
     consecutiveFailures: 0,
   };
 
@@ -120,9 +112,6 @@ export async function runCheck(
       if (history.length > 0) await appendHistory(kv, history);
       await saveSnapshot(kv, next);
 
-      if (status.hits.length > 0 && ntfy) {
-        await notifyHits(ntfy, status.hits, deps.fetchFn, status);
-      }
       // Remember (without re-notifying) hits at stores we couldn't check this
       // run, so they aren't logged as a fresh in_stock when the store returns.
       if (settings.enabled) {
@@ -133,6 +122,19 @@ export async function runCheck(
             watched.has(pairKey(h.storeId, h.part))
           ) status.hits.push(h);
         }
+      }
+      const prevKeys = new Set(
+        (prevRun?.hits ?? []).map((h) => pairKey(h.storeId, h.part)),
+      );
+      status.newHits = status.hits.filter((h) =>
+        !prevKeys.has(pairKey(h.storeId, h.part))
+      );
+      const webhook = Deno.env.get("DISCORD_WEBHOOK_URL");
+      const alert = buildAlert(
+        status.newHits.filter((h) => result.storesChecked.includes(h.storeId)),
+      );
+      if (webhook && settings.enabled && alert) {
+        await sendDiscord(webhook, alert, PRODUCTS[0].shopUrl, deps.fetchFn);
       }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -149,19 +151,6 @@ export async function runCheck(
           await appendHistory(kv, [{ at, kind: "warning", message: warning }]);
         } catch (err) {
           console.error("Failed to record failure warning:", err);
-        }
-        if (ntfy) {
-          try {
-            await sendNtfy(ntfy, {
-              title: warning,
-              body:
-                `The last ${FAILURE_WARNING_THRESHOLD} checks failed. Latest error: ${message}`,
-              priority: 3,
-              tags: ["warning"],
-            }, deps.fetchFn);
-          } catch (err) {
-            console.error("Failed to send failure warning:", err);
-          }
         }
       }
     }
@@ -201,27 +190,4 @@ function historyEntries(
     out.push({ at: ctx.at, kind: "sold_out", ...p });
   }
   return out;
-}
-
-async function notifyHits(
-  ntfy: NtfyConfig,
-  hits: Hit[],
-  fetchFn: FetchFn | undefined,
-  status: RunStatus,
-): Promise<void> {
-  const { title, body } = formatHitsMessage(hits);
-  try {
-    await sendNtfy(ntfy, {
-      title,
-      body,
-      priority: 5,
-      tags: ["iphone", "rotating_light"],
-      click: PRODUCTS[0].shopUrl,
-    }, fetchFn);
-    status.notified = true;
-  } catch (e) {
-    // The check itself succeeded; just record that the push failed.
-    console.error("ntfy send failed:", e);
-    status.error = `Notification failed: ${e instanceof Error ? e.message : e}`;
-  }
 }
