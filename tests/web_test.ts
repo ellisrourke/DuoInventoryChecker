@@ -9,7 +9,8 @@ import { saveSnapshot } from "../src/stock.ts";
 import { appendHistory, appendRestocks } from "../src/history.ts";
 import { assert, assertEquals } from "./_assert.ts";
 
-const auth = {};
+const PW = "s3cret";
+const auth = { Authorization: "Basic " + btoa("me:" + PW) };
 const goodRun: RunStatus = {
   at: "2026-01-01T15:00:00Z",
   ok: true,
@@ -46,7 +47,7 @@ async function withKv(fn: (kv: Deno.Kv) => Promise<void>) {
 
 Deno.test("404 and 405", async () => {
   await withKv(async (kv) => {
-    const h = createHandler(kv, {});
+    const h = createHandler(kv, { adminPassword: PW });
     assertEquals(
       (await h(new Request("http://localhost/nope", { headers: auth }))).status,
       404,
@@ -62,7 +63,7 @@ Deno.test("404 and 405", async () => {
 
 Deno.test("POST /toggle flips a pair and redirects to the stock anchor", async () => {
   await withKv(async (kv) => {
-    const h = createHandler(kv, {});
+    const h = createHandler(kv, { adminPassword: PW });
     const key = pairKey("R466", "MK2D4X/A");
     assert((await getSettings(kv)).watch.includes(key));
     const r = await h(post("/toggle", "store=R466&part=MK2D4X%2FA"));
@@ -79,7 +80,7 @@ Deno.test("POST /toggle flips a pair and redirects to the stock anchor", async (
 
 Deno.test("POST /settings: alerts form toggles enabled", async () => {
   await withKv(async (kv) => {
-    const h = createHandler(kv, {});
+    const h = createHandler(kv, { adminPassword: PW });
     const r = await h(
       post("/settings", "alerts_form=1", { Origin: "http://localhost" }),
     );
@@ -113,7 +114,7 @@ const catalogForm = (over: Record<string, string> = {}) =>
 
 Deno.test("POST /settings: catalog form saves, watches new pairs, validates", async () => {
   await withKv(async (kv) => {
-    const h = createHandler(kv, {});
+    const h = createHandler(kv, { adminPassword: PW });
     const r = await h(post("/settings", catalogForm()));
     assertEquals(r.headers.get("Location"), "/?tab=settings&saved=1");
     const s = await getSettings(kv);
@@ -146,7 +147,7 @@ Deno.test("POST /settings: catalog form saves, watches new pairs, validates", as
 
 Deno.test("CSRF: mismatched Origin/Referer rejected", async () => {
   await withKv(async (kv) => {
-    const h = createHandler(kv, {});
+    const h = createHandler(kv, { adminPassword: PW });
     const r = await h(
       post("/settings", "alerts_form=1", { Origin: "https://evil.example" }),
     );
@@ -236,7 +237,7 @@ Deno.test("tab: stock shows check marks and option counts", async () => {
 
 Deno.test("tab: stock with nothing in stock", async () => {
   await withKv(async (kv) => {
-    const h = createHandler(kv, {});
+    const h = createHandler(kv, { adminPassword: PW });
     const html = await get(h, "/?tab=stock");
     assert(html.includes("No check has run yet"));
     assert(html.includes("None available"));
@@ -333,7 +334,7 @@ Deno.test("GET /api/status provides a formatted browser notification", async () 
       }],
       storesChecked: ["R466"],
     });
-    const h = createHandler(kv, {});
+    const h = createHandler(kv, { adminPassword: PW });
     const response = await h(
       new Request("http://localhost/api/status", { headers: auth }),
     );
@@ -373,7 +374,7 @@ Deno.test("escaping: malicious lastRun error and query values", async () => {
       }],
       consecutiveFailures: 3,
     });
-    const h = createHandler(kv, {});
+    const h = createHandler(kv, { adminPassword: PW });
     for (const tab of ["stock", "changes", "patterns", "settings"]) {
       const html = await get(h, `/?tab=${tab}&error=%3Cimg%20src%3Dx%3E`);
       assert(html.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));
@@ -385,5 +386,40 @@ Deno.test("escaping: malicious lastRun error and query values", async () => {
     assert(
       s.includes("Eaton &lt;b&gt;Centre&lt;/b&gt;") || !s.includes("<b>Centre"),
     );
+  });
+});
+
+Deno.test("auth: 401 without/with wrong password; 503 on public host without one", async () => {
+  await withKv(async (kv) => {
+    const h = createHandler(kv, { adminPassword: PW });
+    const r = await h(new Request("http://localhost/"));
+    assertEquals(r.status, 401);
+    const bad = await h(
+      new Request("http://localhost/", {
+        headers: { Authorization: "Basic " + btoa("x:wrong") },
+      }),
+    );
+    assertEquals(bad.status, 401);
+    assertEquals(
+      (await h(new Request("http://localhost/", { headers: auth }))).status,
+      200,
+    );
+    assertEquals((await h(new Request("http://localhost/health"))).status, 200);
+
+    const prev = Deno.env.get("ADMIN_PASSWORD");
+    Deno.env.delete("ADMIN_PASSWORD");
+    try {
+      const open = createHandler(kv);
+      assertEquals(
+        (await open(new Request("http://localhost:8000/"))).status,
+        200,
+      );
+      assertEquals(
+        (await open(new Request("https://my-app.deno.dev/"))).status,
+        503,
+      );
+    } finally {
+      if (prev !== undefined) Deno.env.set("ADMIN_PASSWORD", prev);
+    }
   });
 });

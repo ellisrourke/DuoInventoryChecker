@@ -79,9 +79,10 @@ choose which store/model combinations send alerts.
    to the app. The settings page and alert state are stored there.
 2. **Environment variables** (project settings):
 
-   | Variable              | Required | Purpose                                                                                                                                                          |
-   | --------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-   | `DISCORD_WEBHOOK_URL` | no       | Fallback Discord webhook URL (normally set in the Settings tab). Posts to a channel when an item newly comes into stock; the Discord iPhone app pushes it to you |
+   | Variable              | Required       | Purpose                                                                                                                                                          |
+   | --------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `ADMIN_PASSWORD`      | yes (deployed) | Password for the app (any username). Without it, only localhost is served; other hosts get a 503                                                                 |
+   | `DISCORD_WEBHOOK_URL` | no             | Fallback Discord webhook URL (normally set in the Settings tab). Posts to a channel when an item newly comes into stock; the Discord iPhone app pushes it to you |
 
 3. Open the deployment URL in the browser, allow notifications in **Settings**,
    and pick the models/stores to watch. Keep the dashboard open to receive
