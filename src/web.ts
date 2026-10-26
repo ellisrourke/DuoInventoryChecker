@@ -1,4 +1,4 @@
-// Local UI (Stock / Recent changes / Patterns / Settings) and a
+// Password-protected UI (Stock / Recent changes / Patterns / Settings) and a
 // small JSON API. Server-rendered HTML with inline CSS; works without JS.
 
 import { buildAlert, sendDiscord } from "./alert.ts";
@@ -43,6 +43,8 @@ import {
 } from "./settings.ts";
 
 export interface WebDeps {
+  /** Admin password; `undefined` falls back to ADMIN_PASSWORD. */
+  adminPassword?: string;
   /** Invoked by POST /run. */
   runCheck?: () => Promise<RunStatus>;
   /** Discord webhook override (tests); `undefined` uses saved settings, then the environment. */
@@ -74,6 +76,39 @@ export function escapeHtml(s: unknown): string {
 }
 
 const esc = escapeHtml;
+
+async function safeEqual(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [ha, hb] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b)),
+  ]);
+  const x = new Uint8Array(ha), y = new Uint8Array(hb);
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
+  return diff === 0;
+}
+
+async function isAuthorized(req: Request, password: string): Promise<boolean> {
+  const h = req.headers.get("authorization");
+  if (!h || !/^basic\s+/i.test(h)) return false;
+  let decoded: string;
+  try {
+    const bin = atob(h.replace(/^basic\s+/i, "").trim());
+    decoded = new TextDecoder().decode(
+      Uint8Array.from(bin, (c) => c.charCodeAt(0)),
+    );
+  } catch {
+    return false;
+  }
+  const idx = decoded.indexOf(":");
+  return idx >= 0 && await safeEqual(decoded.slice(idx + 1), password);
+}
+
+function isLocalhost(url: URL): boolean {
+  return ["localhost", "127.0.0.1", "[::1]"].includes(url.host.split(":")[0]) ||
+    url.hostname === "[::1]" || url.hostname === "::1";
+}
 
 function sameOrigin(req: Request): boolean {
   const host = new URL(req.url).host;
@@ -1001,6 +1036,21 @@ export function createHandler(
       return text("ok", 200);
     }
 
+    // With no password set, only localhost is served; a deployed app fails closed.
+    const password = deps.adminPassword ?? Deno.env.get("ADMIN_PASSWORD");
+    if (password) {
+      if (!(await isAuthorized(req, password))) {
+        return text("Authentication required", 401, {
+          "WWW-Authenticate": 'Basic realm="Stock Watcher", charset="UTF-8"',
+        });
+      }
+    } else if (!isLocalhost(url)) {
+      return text(
+        "ADMIN_PASSWORD is not set. Set the ADMIN_PASSWORD environment variable to enable this app.",
+        503,
+      );
+    }
+
     const allowed = ROUTES[url.pathname];
     if (!allowed) return text("Not found", 404);
     if (!allowed.includes(req.method)) {
@@ -1052,7 +1102,12 @@ export function createHandler(
           : [];
         const notification = buildAlert(alertHits, settings.catalog);
         return new Response(
-          JSON.stringify({ settings, lastRun, snapshot, notification }),
+          JSON.stringify({
+            settings: { ...settings, discordWebhookUrl: undefined },
+            lastRun,
+            snapshot,
+            notification,
+          }),
           {
             headers: {
               "Content-Type": "application/json; charset=utf-8",
