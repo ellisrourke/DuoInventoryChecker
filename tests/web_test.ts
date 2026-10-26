@@ -312,9 +312,32 @@ Deno.test("tab: settings renders status and redirects return to tab", async () =
     const html = await get(h, "/?tab=settings");
     assert(html.includes("Bulk watch tool"));
     assert(html.includes("Enable browser notifications"));
-    assert(html.includes("Notifications require permission"));
+    assert(html.includes("Browser notifications require permission"));
+    assert(html.includes("Test Discord alert"));
     const r = await h(post("/run", "return=settings"));
     assertEquals(r.headers.get("Location"), "/?tab=settings&ran=1");
+  });
+});
+
+Deno.test("POST /discord-test reports webhook success and failure", async () => {
+  await withKv(async (kv) => {
+    const h = createHandler(kv, {
+      adminPassword: PW,
+      discordWebhookUrl: "https://example.test/hook",
+      fetchFn: () => Promise.resolve(new Response(null, { status: 204 })),
+    });
+    const ok = await h(post("/discord-test", ""));
+    assertEquals(ok.headers.get("Location"), "/?tab=settings&discordTest=sent");
+
+    const failing = createHandler(kv, {
+      adminPassword: PW,
+      discordWebhookUrl: "https://example.test/hook",
+      fetchFn: () => Promise.resolve(new Response(null, { status: 500 })),
+    });
+    const failed = await failing(post("/discord-test", ""));
+    assertEquals(failed.headers.get("Location")?.startsWith(
+      "/?tab=settings&error=",
+    ), true);
   });
 });
 

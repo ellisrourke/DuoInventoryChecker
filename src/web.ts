@@ -1,7 +1,7 @@
 // Password-protected UI (Stock / Recent changes / Patterns / Settings) and a
 // small JSON API. Server-rendered HTML with inline CSS; works without JS.
 
-import { buildAlert } from "./alert.ts";
+import { buildAlert, sendDiscord } from "./alert.ts";
 import {
   ALL_SKUS,
   CAPACITIES,
@@ -40,6 +40,10 @@ export interface WebDeps {
   adminPassword?: string;
   /** Invoked by POST /run. */
   runCheck?: () => Promise<RunStatus>;
+  /** Discord webhook override (tests); `undefined` falls back to the environment. */
+  discordWebhookUrl?: string;
+  /** Fetch override for the Discord test action. */
+  fetchFn?: typeof fetch;
   /** Clock override (tests, screenshots). */
   now?: () => Date;
 }
@@ -375,10 +379,22 @@ const JS =
       try{
         if(Notification.permission!=="granted")await Notification.requestPermission();
         if(Notification.permission!=="granted"){showPermission();return;}
-        new Notification("iPhone Duo in stock (test)",{body:"512GB Star White available at Brisbane. This is a test alert."});
-        message.textContent="Test alert sent.";
+        var testNotification=new Notification("iPhone Duo in stock (test)",{body:"512GB Star White available at Brisbane. This is a test alert."});
+        message.textContent="Test alert created; waiting for browser delivery.";
+        var deliveryReported=false;
+        testNotification.onshow=function(){
+          deliveryReported=true;
+          message.textContent="Brave displayed the test alert. If it wasn't visible, check OS notification settings.";
+        };
+        testNotification.onerror=function(){
+          deliveryReported=true;
+          message.textContent="Brave could not display the test alert. Check browser and OS notification settings.";
+        };
+        window.setTimeout(function(){
+          if(!deliveryReported)message.textContent="Brave gave no delivery confirmation. Check Brave and OS notification settings.";
+        },3000);
       }catch{
-        message.textContent="Unable to send test alert.";
+        message.textContent="Unable to create test alert. Check browser notification permission and settings.";
       }
     });
   }
@@ -394,11 +410,12 @@ const JS =
         if(storedRunAt&&run.at<=storedRunAt){lastRunAt=storedRunAt;return;}
       }catch{}
       if(run.at===lastRunAt)return;
-      lastRunAt=run.at;
-      try{localStorage.setItem("lastRunAt",lastRunAt);}catch{}
-      if(run.ok&&data.notification&&Notification.permission==="granted"){
+      if(run.ok&&data.notification){
+        if(Notification.permission!=="granted")return;
         new Notification(data.notification.title,{body:data.notification.body});
       }
+      lastRunAt=run.at;
+      try{localStorage.setItem("lastRunAt",lastRunAt);}catch{}
     }catch{
       if(message)message.textContent="Unable to check for new notifications.";
     }
@@ -464,6 +481,8 @@ function renderNotes(d: PageData): string {
     out.push(`<p class="note ok">Settings saved.</p>`);
   } else if (u.has("ran")) {
     out.push(`<p class="note ok">Check completed.</p>`);
+  } else if (u.has("discordTest")) {
+    out.push(`<p class="note ok">Discord test alert accepted by the webhook.</p>`);
   }
   if (!d.settings.enabled) {
     out.push(
@@ -813,7 +832,7 @@ function renderSettings(d: PageData): string {
 <div class="row"><button class="btn primary" type="submit" name="mode" value="replace">Replace watch list</button><button class="btn" type="submit" name="mode" value="add">Add</button><button class="btn danger" type="submit" name="mode" value="remove">Remove</button></div></form>
 <section class="card"><h2>Notifications</h2>
 <p>Browser notifications arrive when stock is found while the dashboard is open.</p>
-<div class="row"><button class="btn" id="enable-notifications" type="button">Enable browser notifications</button><button class="btn" id="test-stock-alert" type="button">Test stock alert</button><form method="post" action="/run"><input type="hidden" name="return" value="settings"><button class="btn" type="submit">Run check now</button></form></div><p class="muted" id="notification-status" role="status">Notifications require permission and this dashboard to stay open.</p></section>
+<div class="row"><button class="btn" id="enable-notifications" type="button">Enable browser notifications</button><button class="btn" id="test-stock-alert" type="button">Test browser alert</button><form method="post" action="/discord-test"><button class="btn" type="submit">Test Discord alert</button></form><form method="post" action="/run"><input type="hidden" name="return" value="settings"><button class="btn" type="submit">Run check now</button></form></div><p class="muted" id="notification-status" role="status">Browser notifications require permission and this dashboard to stay open. Discord alerts require DISCORD_WEBHOOK_URL.</p></section>
 <section class="card"><h2>Last run</h2>${last}</section>`;
 }
 
@@ -846,6 +865,7 @@ const ROUTES: Record<string, string[]> = {
   "/settings": ["POST"],
   "/toggle": ["POST"],
   "/run": ["POST"],
+  "/discord-test": ["POST"],
 };
 
 /** Colour x size x store product as pair keys. */
@@ -993,6 +1013,33 @@ export function createHandler(
             ),
           );
         }
+      }
+      case "/discord-test": {
+        const webhook = deps.discordWebhookUrl ??
+          Deno.env.get("DISCORD_WEBHOOK_URL");
+        if (!webhook) {
+          return redirect(
+            "tab=settings&error=" +
+              encodeURIComponent("DISCORD_WEBHOOK_URL is not set"),
+          );
+        }
+        const accepted = await sendDiscord(
+          webhook,
+          {
+            title: "iPhone Duo stock alert test",
+            body: "Discord notifications are configured correctly.",
+          },
+          PRODUCTS[0].shopUrl,
+          deps.fetchFn,
+        );
+        return accepted
+          ? redirect("tab=settings&discordTest=sent")
+          : redirect(
+            "tab=settings&error=" +
+              encodeURIComponent(
+                "Discord rejected the test alert; check server logs",
+              ),
+          );
       }
     }
     return text("Not found", 404);

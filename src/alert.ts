@@ -27,13 +27,13 @@ export function buildAlert(hits: Hit[]): Alert | null {
   };
 }
 
-/** Post to a Discord webhook; failures are logged, never thrown. */
+/** Post to a Discord webhook; failures are logged and reported as `false`. */
 export async function sendDiscord(
   webhookUrl: string,
   alert: Alert,
   shopUrl: string,
   fetchFn: typeof fetch = fetch,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const res = await fetchFn(webhookUrl, {
       method: "POST",
@@ -44,7 +44,9 @@ export async function sendDiscord(
     });
     if (!res.ok) console.error(`Discord webhook failed: HTTP ${res.status}`);
     await res.body?.cancel();
+    return res.ok;
   } catch (e) {
     console.error("Discord webhook failed:", e);
+    return false;
   }
 }
